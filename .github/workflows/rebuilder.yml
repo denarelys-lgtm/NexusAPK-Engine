@@ -1,0 +1,138 @@
+name: NexusAPK Zip Rebuilder
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: 'Nombre del Release (tag)'
+        required: true
+        default: 'build'
+      zip_name:
+        description: 'Nombre del archivo ZIP'
+        required: true
+        default: 'rebuild.zip'
+
+jobs:
+  rebuild-from-zip-release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 1. Checkout del Repositorio
+        uses: actions/checkout@v4
+
+      - name: 2. Configurar Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: 3. Instalar Apktool
+        shell: bash
+        run: |
+          set -e
+          echo "Descargando Apktool..."
+          API_URL="https://api.github.com/repos/iBotPeaches/Apktool/releases/latest"
+          APKTOOL_TAG=$(curl -fsSL "$API_URL" | python3 -c "import sys, json; print(json.load(sys.stdin)['tag_name'])")
+          APKTOOL_VERSION="${APKTOOL_TAG#v}"
+          wget -qO apktool.jar "https://github.com/iBotPeaches/Apktool/releases/download/v${APKTOOL_VERSION}/apktool_${APKTOOL_VERSION}.jar"
+          echo "Apktool listo."
+
+      - name: 4. Descargar el ZIP Modificado desde GitHub Releases
+        shell: bash
+        run: |
+          set -e
+          TAG="${{ github.event.inputs.tag_name }}"
+          ZIP="${{ github.event.inputs.zip_name }}"
+          
+          DOWNLOAD_URL="https://github.com/${{ github.repository }}/releases/download/${TAG}/${ZIP}"
+          
+          echo "Descargando desde: $DOWNLOAD_URL"
+          wget --show-progress -O uploaded_source.zip "$DOWNLOAD_URL"
+          
+          if [ ! -s uploaded_source.zip ]; then
+            echo "ERROR: El archivo ZIP descargado está vacío o no existe."
+            exit 1
+          fi
+
+      - name: 5. Descomprimir el Código Fuente
+        shell: bash
+        run: |
+          set -e
+          rm -rf source_extracted
+          mkdir -p source_extracted
+          
+          echo "Descomprimiendo archivo..."
+          unzip -q uploaded_source.zip -d source_extracted
+          
+          echo "Contenido extraído:"
+          ls -la source_extracted/
+
+      - name: 6. Recompilar con Apktool
+        shell: bash
+        run: |
+          set -e
+          
+          PROJECT_DIR=$(find source_extracted -name "apktool.yml" -exec dirname {} \;)
+          
+          if [ -z "$PROJECT_DIR" ]; then
+            if [ -f "source_extracted/apktool.yml" ]; then
+              PROJECT_DIR="source_extracted"
+            else
+              echo "ERROR: No se encontró 'apktool.yml' dentro del ZIP."
+              exit 1
+            fi
+          fi
+          
+          echo "Proyecto localizado en: $PROJECT_DIR"
+          
+          rm -f rebuilt-unsigned.apk
+          java -jar apktool.jar b "$PROJECT_DIR" -o rebuilt-unsigned.apk
+          
+          if [ ! -f rebuilt-unsigned.apk ]; then
+            echo "ERROR: No se pudo generar el APK sin firmar."
+            exit 1
+          fi
+          ls -lh rebuilt-unsigned.apk
+
+      - name: 7. Zipalign del APK
+        shell: bash
+        run: |
+          set -e
+          BT_DIR=$(find "$ANDROID_HOME/build-tools" -maxdepth 1 -type d | sort -V | tail -1)
+          export PATH="$BT_DIR:$PATH"
+          
+          zipalign -p -f 4 rebuilt-unsigned.apk rebuilt-aligned.apk
+          ls -lh rebuilt-aligned.apk
+
+      - name: 8. Firmar APK (Debug Keystore)
+        shell: bash
+        run: |
+          set -e
+          BT_DIR=$(find "$ANDROID_HOME/build-tools" -maxdepth 1 -type d | sort -V | tail -1)
+          export PATH="$BT_DIR:$PATH"
+          
+          KEYSTORE="debug.keystore"
+          keytool -genkeypair -v -keystore "$KEYSTORE" -alias androiddebugkey \
+            -storepass android -keypass android -keyalg RSA -keysize 2048 \
+            -validity 10000 -dname "CN=Android Debug,O=Android,C=US" 2>/dev/null || true
+
+          apksigner sign \
+            --ks "$KEYSTORE" \
+            --ks-key-alias androiddebugkey \
+            --ks-pass pass:android \
+            --key-pass pass:android \
+            --v1-signing-enabled true \
+            --v2-signing-enabled true \
+            --v3-signing-enabled true \
+            --out custom-rebuilt.apk \
+            rebuilt-aligned.apk
+
+          echo "APK firmado exitosamente:"
+          ls -lh custom-rebuilt.apk
+
+      - name: 9. Subir APK Recompilado como Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: rebuilt-custom-apk
+          path: custom-rebuilt.apk
+          if-no-files-found: error

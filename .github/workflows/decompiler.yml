@@ -12,31 +12,39 @@ jobs:
 
     steps:
 
-      # --------------------------------------------------
-      # 1. Checkout
-      # --------------------------------------------------
+      # ==================================================
+      # 1. CHECKOUT
+      # ==================================================
       - name: 1. Checkout del Repositorio
         uses: actions/checkout@v4
 
-      # --------------------------------------------------
-      # 2. Java 17
-      # --------------------------------------------------
+
+      # ==================================================
+      # 2. JAVA 17
+      # ==================================================
       - name: 2. Configurar Entorno Java (JDK 17)
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
 
-      # --------------------------------------------------
-      # 3. Instalar JADX
-      # --------------------------------------------------
+
+      # ==================================================
+      # 3. INSTALAR JADX
+      # ==================================================
       - name: 3. Instalar JADX CLI Moderno
+        shell: bash
         run: |
           set -e
 
-          echo "Detectando última versión de JADX..."
+          echo "=========================================="
+          echo "     INSTALACIÓN DE JADX"
+          echo "=========================================="
 
-          JADX_TAG=$(curl -fsSL https://api.github.com/repos/skylot/jadx/releases/latest \
+          echo "Detectando última versión..."
+
+          JADX_TAG=$(curl -fsSL \
+            "https://api.github.com/repos/skylot/jadx/releases/latest" \
             | grep '"tag_name"' \
             | head -1 \
             | cut -d '"' -f 4)
@@ -49,66 +57,131 @@ jobs:
           JADX_VERSION="${JADX_TAG#v}"
 
           echo "Tag detectado: $JADX_TAG"
-          echo "Versión de JADX: $JADX_VERSION"
+          echo "Versión: $JADX_VERSION"
 
           JADX_URL="https://github.com/skylot/jadx/releases/download/${JADX_TAG}/jadx-${JADX_VERSION}.zip"
 
-          echo "URL de descarga:"
+          echo "URL:"
           echo "$JADX_URL"
+
+          echo ""
+          echo "Descargando JADX..."
 
           wget -O "jadx-${JADX_VERSION}.zip" "$JADX_URL"
 
+          if [ ! -s "jadx-${JADX_VERSION}.zip" ]; then
+            echo "ERROR: El archivo JADX está vacío o no existe."
+            exit 1
+          fi
+
+          echo ""
           echo "Extrayendo JADX..."
+
+          rm -rf jadx-tool
 
           unzip -q "jadx-${JADX_VERSION}.zip" -d jadx-tool
 
+          echo ""
+          echo "Contenido de jadx-tool:"
+          ls -la jadx-tool
+
+          echo ""
+          echo "Contenido de jadx-tool/bin:"
+          ls -la jadx-tool/bin
+
           chmod +x jadx-tool/bin/jadx
 
+          # Añadir al PATH del paso actual
+          export PATH="$GITHUB_WORKSPACE/jadx-tool/bin:$PATH"
+
+          # Añadir al PATH de los siguientes pasos
           echo "$GITHUB_WORKSPACE/jadx-tool/bin" >> "$GITHUB_PATH"
 
-          echo "Verificando instalación..."
+          echo ""
+          echo "PATH actual:"
+          echo "$PATH"
 
+          echo ""
+          echo "Verificando JADX..."
+
+          if ! command -v jadx >/dev/null 2>&1; then
+            echo "ERROR: jadx no está disponible en PATH."
+            exit 1
+          fi
+
+          echo "JADX encontrado en:"
+          command -v jadx
+
+          echo ""
+          echo "Versión instalada:"
           jadx --version
 
-      # --------------------------------------------------
-      # 4. Descargar APK
-      # --------------------------------------------------
+          echo ""
+          echo "JADX instalado correctamente."
+
+
+      # ==================================================
+      # 4. DESCARGAR APK
+      # ==================================================
       - name: 4. Descargar APK desde GitHub Releases
+        shell: bash
         run: |
           set -e
+
+          echo "=========================================="
+          echo "       DESCARGA DEL APK"
+          echo "=========================================="
 
           mkdir -p input_apk
           mkdir -p output_project
 
-          echo "Descargando APK desde GitHub Releases..."
+          APK_URL="https://github.com/denarelys-lgtm/NexusAPK-Engine/releases/download/Apk/tu_app.apk"
 
-          wget -O input_apk/app.target.apk \
-            "https://github.com/denarelys-lgtm/NexusAPK-Engine/releases/download/Apk/tu_app.apk"
+          echo "URL del APK:"
+          echo "$APK_URL"
 
-          echo "Verificando APK..."
+          wget \
+            --show-progress \
+            -O input_apk/app.target.apk \
+            "$APK_URL"
 
           if [ ! -s input_apk/app.target.apk ]; then
-            echo "ERROR: El APK no fue descargado correctamente."
+            echo "ERROR: No se pudo descargar el APK."
             exit 1
           fi
 
+          echo ""
+          echo "APK descargado correctamente."
+
           ls -lh input_apk/app.target.apk
 
-      # --------------------------------------------------
-      # 5. Descompilar APK con JADX
-      # --------------------------------------------------
+
+      # ==================================================
+      # 5. DESCOMPILAR APK
+      # ==================================================
       - name: 5. Descompilar APK a Proyecto Gradle Java
+        shell: bash
         run: |
           set -e
 
+          echo "=========================================="
+          echo "          DESCOMPILANDO APK"
+          echo "=========================================="
+
+          export PATH="$GITHUB_WORKSPACE/jadx-tool/bin:$PATH"
+
           TARGET_APK="input_apk/app.target.apk"
 
-          echo "APK objetivo:"
-          echo "$TARGET_APK"
+          echo "JADX:"
+          command -v jadx
 
-          echo "Versión de JADX:"
           jadx --version
 
+          echo ""
+          echo "APK objetivo:"
+          ls -lh "$TARGET_APK"
+
+          echo ""
           echo "Iniciando descompilación..."
 
           jadx \
@@ -119,55 +192,88 @@ jobs:
             --threads-count 4 \
             "$TARGET_APK"
 
+          echo ""
           echo "Descompilación terminada."
 
+          echo ""
           echo "Contenido generado:"
-          ls -la output_project
+          find output_project -maxdepth 2 -type f | head -100
 
-      # --------------------------------------------------
-      # 6. Saneamiento del código
-      # --------------------------------------------------
+
+      # ==================================================
+      # 6. POST-PROCESAMIENTO
+      # ==================================================
       - name: 6. Saneamiento Inteligente del Código
+        shell: bash
         run: |
           set -e
 
-          if [ -f scripts/post_process.py ]; then
-            echo "Ejecutando post_process.py..."
+          echo "=========================================="
+          echo "       POST-PROCESAMIENTO"
+          echo "=========================================="
+
+          if [ -f "scripts/post_process.py" ]; then
+
+            echo "Ejecutando scripts/post_process.py..."
+
             python3 scripts/post_process.py
+
+            echo "Post-procesamiento terminado."
+
           else
-            echo "AVISO: scripts/post_process.py no existe."
+
+            echo "AVISO:"
+            echo "No existe scripts/post_process.py"
             echo "Se continúa sin post-procesamiento."
+
           fi
 
-      # --------------------------------------------------
-      # 7. Recompilar APK
-      # --------------------------------------------------
+
+      # ==================================================
+      # 7. RECOMPILAR APK
+      # ==================================================
       - name: 7. Recompilar el Proyecto a un Nuevo APK con Gradle
+        shell: bash
         run: |
           set -e
+
+          echo "=========================================="
+          echo "          RECOMPILANDO APK"
+          echo "=========================================="
 
           cd output_project
 
-          echo "Contenido del proyecto:"
+          echo "Directorio actual:"
+          pwd
+
+          echo ""
+          echo "Contenido:"
           ls -la
 
-          if [ ! -f gradlew ]; then
-            echo "ERROR: JADX no generó gradlew."
-            echo "No se puede compilar como proyecto Gradle."
+          if [ ! -f "gradlew" ]; then
+            echo ""
+            echo "ERROR: No se encontró gradlew."
+            echo ""
+            echo "El proyecto generado por JADX no contiene"
+            echo "un wrapper Gradle utilizable."
+            echo ""
             exit 1
           fi
 
           chmod +x gradlew
 
-          echo "Compilando proyecto..."
+          echo ""
+          echo "Ejecutando Gradle..."
 
           ./gradlew assembleDebug --stacktrace
 
+          echo ""
           echo "Compilación terminada."
 
-      # --------------------------------------------------
-      # 8. Subir APK como Artifact
-      # --------------------------------------------------
+
+      # ==================================================
+      # 8. SUBIR APK
+      # ==================================================
       - name: 8. Subir el APK Recompilado como Artifact
         uses: actions/upload-artifact@v4
         with:
@@ -175,25 +281,46 @@ jobs:
           path: output_project/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
 
-      # --------------------------------------------------
-      # 9. Sincronizar código fuente
-      # --------------------------------------------------
+
+      # ==================================================
+      # 9. GUARDAR CÓDIGO FUENTE
+      # ==================================================
       - name: 9. Sincronizar Código Fuente al Repositorio
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
         run: |
           set -e
+
+          echo "=========================================="
+          echo "       SINCRONIZANDO CÓDIGO"
+          echo "=========================================="
 
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
 
           git add output_project/
 
+          echo ""
+          echo "Estado de Git:"
           git status
 
           if git diff-index --quiet HEAD; then
+
+            echo ""
             echo "No hay cambios nuevos que commitear."
+
           else
-            git commit -m "feat: Update decompiled source code [Automated CI]"
+
+            echo ""
+            echo "Creando commit..."
+
+            git commit \
+              -m "feat: Update decompiled source code [Automated CI]"
+
+            echo ""
+            echo "Enviando cambios a main..."
+
             git push origin HEAD:main
+
           fi

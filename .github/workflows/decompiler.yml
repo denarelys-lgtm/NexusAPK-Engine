@@ -40,10 +40,17 @@ jobs:
             "$API_URL" \
             | python3 -c "import sys, json; print(json.load(sys.stdin)['tag_name'])")
 
+          if [ -z "$JADX_TAG" ]; then
+            echo "ERROR: No se pudo detectar la version de JADX."
+            exit 1
+          fi
+
           JADX_VERSION="${JADX_TAG#v}"
           JADX_URL="https://github.com/skylot/jadx/releases/download/${JADX_TAG}/jadx-${JADX_VERSION}.zip"
 
-          echo "JADX version: $JADX_VERSION"
+          echo "Tag detectado: $JADX_TAG"
+          echo "Version: $JADX_VERSION"
+          echo "URL: $JADX_URL"
 
           wget --show-progress -O "jadx-${JADX_VERSION}.zip" "$JADX_URL"
 
@@ -54,6 +61,9 @@ jobs:
           echo "$GITHUB_WORKSPACE/jadx-tool/bin" >> "$GITHUB_PATH"
           export PATH="$GITHUB_WORKSPACE/jadx-tool/bin:$PATH"
 
+          echo ""
+          echo "JADX instalado:"
+          command -v jadx
           jadx --version
 
       - name: 4. Instalar apktool
@@ -73,14 +83,22 @@ jobs:
             "$API_URL" \
             | python3 -c "import sys, json; print(json.load(sys.stdin)['tag_name'])")
 
+          if [ -z "$APKTOOL_TAG" ]; then
+            echo "ERROR: No se pudo detectar la version de apktool."
+            exit 1
+          fi
+
           APKTOOL_VERSION="${APKTOOL_TAG#v}"
           APKTOOL_URL="https://github.com/iBotPeaches/Apktool/releases/download/v${APKTOOL_VERSION}/apktool_${APKTOOL_VERSION}.jar"
 
-          echo "apktool version: $APKTOOL_VERSION"
+          echo "Tag detectado: $APKTOOL_TAG"
+          echo "Version: $APKTOOL_VERSION"
           echo "URL: $APKTOOL_URL"
 
           wget --show-progress -O apktool.jar "$APKTOOL_URL"
 
+          echo ""
+          echo "apktool instalado:"
           java -jar apktool.jar --version
 
       - name: 5. Descargar APK
@@ -103,6 +121,8 @@ jobs:
             exit 1
           fi
 
+          echo ""
+          echo "APK descargado:"
           ls -lh input_apk/app.target.apk
           file input_apk/app.target.apk
 
@@ -130,19 +150,35 @@ jobs:
           JADX_EXIT=$?
           set -e
 
-          echo "JADX exit: $JADX_EXIT"
+          echo ""
+          echo "JADX exit code: $JADX_EXIT"
 
           if [ ! -d output_project ]; then
             echo "ERROR: No existe output_project."
             exit 1
           fi
 
-          echo "Archivos generados: $(find output_project -type f | wc -l)"
+          FILE_COUNT=$(find output_project -type f | wc -l)
+          echo "Archivos generados: $FILE_COUNT"
+
+          if [ "$FILE_COUNT" -eq 0 ]; then
+            echo "ERROR: output_project esta vacio."
+            exit 1
+          fi
+
+          if [ "$JADX_EXIT" -ne 0 ]; then
+            echo "AVISO: JADX termino con errores parciales."
+            echo "El codigo generado se procesara igualmente."
+          fi
 
       - name: 7. Saneamiento del Codigo (scripts/post_process.py)
         shell: bash
         run: |
           set -e
+
+          echo "=========================================="
+          echo "          POST-PROCESAMIENTO"
+          echo "=========================================="
 
           if [ -f scripts/post_process.py ]; then
             python3 scripts/post_process.py
@@ -209,6 +245,8 @@ jobs:
             exit 1
           fi
 
+          echo ""
+          echo "APK recompilado:"
           ls -lh rebuilt.apk
 
       - name: 10. Verificar APK
@@ -224,7 +262,7 @@ jobs:
           file rebuilt.apk
 
           echo ""
-          echo "Entradas del APK:"
+          echo "Entradas del APK (primeras 20):"
           unzip -l rebuilt.apk | head -20
 
       - name: 11. Subir APK Recompilado
@@ -255,14 +293,23 @@ jobs:
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
 
-          git add output_project/
+          # -f fuerza el add aunque .gitignore excluya output_project/
+          git add -f output_project/
 
+          echo ""
+          echo "Estado de git:"
           git status
 
           if git diff-index --quiet HEAD; then
+            echo ""
             echo "No hay cambios nuevos que commitear."
           else
+            echo ""
+            echo "Creando commit..."
             git commit -m "feat: Update decompiled source code [Automated CI]"
+
+            echo ""
+            echo "Haciendo push..."
             git push origin HEAD:main
           fi
 

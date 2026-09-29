@@ -40,44 +40,50 @@ jobs:
             "$API_URL" \
             | python3 -c "import sys, json; print(json.load(sys.stdin)['tag_name'])")
 
-          if [ -z "$JADX_TAG" ]; then
-            echo "ERROR: No se pudo detectar la version de JADX."
-            exit 1
-          fi
-
           JADX_VERSION="${JADX_TAG#v}"
-
-          echo "Tag detectado: $JADX_TAG"
-          echo "Version: $JADX_VERSION"
-
           JADX_URL="https://github.com/skylot/jadx/releases/download/${JADX_TAG}/jadx-${JADX_VERSION}.zip"
 
-          echo "URL de descarga: $JADX_URL"
+          echo "JADX version: $JADX_VERSION"
 
-          wget \
-            --show-progress \
-            -O "jadx-${JADX_VERSION}.zip" \
-            "$JADX_URL"
+          wget --show-progress -O "jadx-${JADX_VERSION}.zip" "$JADX_URL"
 
           rm -rf jadx-tool
-
-          unzip -q \
-            "jadx-${JADX_VERSION}.zip" \
-            -d jadx-tool
-
+          unzip -q "jadx-${JADX_VERSION}.zip" -d jadx-tool
           chmod +x jadx-tool/bin/jadx
 
           echo "$GITHUB_WORKSPACE/jadx-tool/bin" >> "$GITHUB_PATH"
-
           export PATH="$GITHUB_WORKSPACE/jadx-tool/bin:$PATH"
 
-          echo ""
-          echo "JADX instalado:"
-          command -v jadx
           jadx --version
 
+      - name: 4. Instalar apktool
+        shell: bash
+        run: |
+          set -e
 
-      - name: 4. Descargar APK
+          echo "=========================================="
+          echo "         INSTALACION DE APKTOOL"
+          echo "=========================================="
+
+          API_URL="https://api.github.com/repos/iBotPeaches/Apktool/releases/latest"
+
+          APKTOOL_TAG=$(curl -fsSL \
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Accept: application/vnd.github+json" \
+            "$API_URL" \
+            | python3 -c "import sys, json; print(json.load(sys.stdin)['tag_name'])")
+
+          APKTOOL_VERSION="${APKTOOL_TAG#v}"
+          APKTOOL_URL="https://github.com/iBotPeaches/Apktool/releases/download/v${APKTOOL_VERSION}/apktool_${APKTOOL_VERSION}.jar"
+
+          echo "apktool version: $APKTOOL_VERSION"
+          echo "URL: $APKTOOL_URL"
+
+          wget --show-progress -O apktool.jar "$APKTOOL_URL"
+
+          java -jar apktool.jar --version
+
+      - name: 5. Descargar APK
         shell: bash
         run: |
           set -e
@@ -90,28 +96,23 @@ jobs:
 
           APK_URL="https://github.com/denarelys-lgtm/NexusAPK-Engine/releases/download/Apk/tu_app.apk"
 
-          wget \
-            --show-progress \
-            -O input_apk/app.target.apk \
-            "$APK_URL"
+          wget --show-progress -O input_apk/app.target.apk "$APK_URL"
 
           if [ ! -s input_apk/app.target.apk ]; then
             echo "ERROR: El APK no fue descargado."
             exit 1
           fi
 
-          echo ""
-          echo "APK descargado:"
           ls -lh input_apk/app.target.apk
+          file input_apk/app.target.apk
 
-
-      - name: 5. Descompilar APK
+      - name: 6. Descompilar con JADX (codigo fuente)
         shell: bash
         run: |
           set -e
 
           echo "=========================================="
-          echo "           DESCOMPILANDO APK"
+          echo "        DESCOMPILANDO CON JADX"
           echo "=========================================="
 
           export PATH="$GITHUB_WORKSPACE/jadx-tool/bin:$PATH"
@@ -119,7 +120,6 @@ jobs:
           rm -rf output_project
 
           set +e
-
           jadx \
             -d output_project \
             --export-gradle \
@@ -127,179 +127,22 @@ jobs:
             --show-bad-code \
             --threads-count 4 \
             input_apk/app.target.apk
-
           JADX_EXIT=$?
-
           set -e
 
-          echo ""
-          echo "=========================================="
-          echo "             RESULTADO JADX"
-          echo "=========================================="
-
-          echo "Codigo de salida: $JADX_EXIT"
+          echo "JADX exit: $JADX_EXIT"
 
           if [ ! -d output_project ]; then
             echo "ERROR: No existe output_project."
             exit 1
           fi
 
-          FILE_COUNT=$(find output_project -type f | wc -l)
+          echo "Archivos generados: $(find output_project -type f | wc -l)"
 
-          echo "Archivos generados: $FILE_COUNT"
-
-          if [ "$FILE_COUNT" -eq 0 ]; then
-            echo "ERROR: output_project esta vacio."
-            exit 1
-          fi
-
-          if [ "$JADX_EXIT" -ne 0 ]; then
-            echo "AVISO: JADX termino con errores."
-            echo "El proyecto generado se procesara igualmente."
-          fi
-
-          echo ""
-          echo "Estructura principal:"
-
-          if [ -f output_project/build.gradle ]; then
-            echo "OK: output_project/build.gradle"
-          else
-            echo "AVISO: falta output_project/build.gradle"
-          fi
-
-          if [ -f output_project/app/build.gradle ]; then
-            echo "OK: output_project/app/build.gradle"
-          else
-            echo "AVISO: falta output_project/app/build.gradle"
-          fi
-
-          if [ -f output_project/settings.gradle ]; then
-            echo "OK: output_project/settings.gradle"
-          else
-            echo "AVISO: falta output_project/settings.gradle"
-          fi
-
-
-      - name: 6. Inspeccionar Proyecto
+      - name: 7. Saneamiento del Codigo (scripts/post_process.py)
         shell: bash
         run: |
           set -e
-
-          echo "=========================================="
-          echo "        INSPECCION DEL PROYECTO"
-          echo "=========================================="
-
-          echo ""
-          echo "===== settings.gradle ====="
-
-          if [ -f output_project/settings.gradle ]; then
-            cat output_project/settings.gradle
-          fi
-
-          echo ""
-          echo "===== build.gradle ====="
-
-          if [ -f output_project/build.gradle ]; then
-            cat output_project/build.gradle
-          fi
-
-          echo ""
-          echo "===== app/build.gradle ====="
-
-          if [ -f output_project/app/build.gradle ]; then
-            cat output_project/app/build.gradle
-          fi
-
-
-      - name: 7. Instalar Gradle 8.11.1
-        shell: bash
-        run: |
-          set -e
-
-          echo "=========================================="
-          echo "          INSTALANDO GRADLE 8.11.1"
-          echo "=========================================="
-
-          GRADLE_VERSION="8.11.1"
-
-          wget \
-            --show-progress \
-            -O gradle.zip \
-            "https://services.gradle.org/distributions/gradle-${GRADLE_VERSION}-bin.zip"
-
-          rm -rf "$HOME/gradle"
-
-          mkdir -p "$HOME/gradle"
-
-          unzip -q \
-            gradle.zip \
-            -d "$HOME/gradle"
-
-          export GRADLE_HOME="$HOME/gradle/gradle-${GRADLE_VERSION}"
-          export PATH="$GRADLE_HOME/bin:$PATH"
-
-          echo "$GRADLE_HOME/bin" >> "$GITHUB_PATH"
-
-          echo ""
-          echo "Gradle instalado:"
-          gradle --version
-
-
-      - name: 8. Configurar Gradle y Wrapper
-        shell: bash
-        run: |
-          set -e
-
-          echo "=========================================="
-          echo "      CONFIGURANDO GRADLE Y MEMORIA"
-          echo "=========================================="
-
-          export GRADLE_HOME="$HOME/gradle/gradle-8.11.1"
-          export PATH="$GRADLE_HOME/bin:$PATH"
-
-          cd output_project
-
-          printf '%s\n' \
-            'org.gradle.jvmargs=-Xmx6g -XX:MaxMetaspaceSize=1g -Dfile.encoding=UTF-8' \
-            'org.gradle.workers.max=2' \
-            'org.gradle.parallel=false' \
-            'org.gradle.daemon=false' \
-            'android.useAndroidX=true' \
-            'android.enableJetifier=true' \
-            > gradle.properties
-
-          echo ""
-          echo "gradle.properties:"
-          cat gradle.properties
-
-          echo ""
-          echo "Generando Gradle Wrapper..."
-
-          gradle wrapper \
-            --gradle-version 8.11.1 \
-            --distribution-type bin
-
-          if [ ! -f gradlew ]; then
-            echo "ERROR: No se pudo generar gradlew."
-            exit 1
-          fi
-
-          chmod +x gradlew
-
-          echo ""
-          echo "Wrapper generado correctamente."
-
-          ./gradlew --version
-
-
-      - name: 9. Saneamiento del Codigo
-        shell: bash
-        run: |
-          set -e
-
-          echo "=========================================="
-          echo "          POST-PROCESAMIENTO"
-          echo "=========================================="
 
           if [ -f scripts/post_process.py ]; then
             python3 scripts/post_process.py
@@ -307,303 +150,98 @@ jobs:
             echo "AVISO: scripts/post_process.py no existe."
           fi
 
-
-      - name: 10. Reparar Recursos Android
-        shell: bash
-        run: |
-          set -u
-
-          echo "=========================================="
-          echo "     REPARACION AUTOMATICA DE RECURSOS"
-          echo "=========================================="
-
-          RES_DIR="output_project/app/src/main/res"
-
-          if [ ! -d "$RES_DIR" ]; then
-            echo "AVISO: No existe $RES_DIR"
-            exit 0
-          fi
-
-          rm -rf repair-backup
-          mkdir -p repair-backup
-
-          echo ""
-          echo "=========================================="
-          echo "1. ELIMINANDO LOCALES (values-XX)"
-          echo "=========================================="
-
-          LOCALES=$(find "$RES_DIR" -maxdepth 1 -type d -name "values-*" | wc -l)
-          echo "Locales encontrados: $LOCALES"
-          find "$RES_DIR" -maxdepth 1 -type d -name "values-*" -print -exec rm -rf {} +
-          echo "Locales eliminados."
-
-          echo ""
-          echo "=========================================="
-          echo "2. FIX AGRESIVO DE XML (]]> roto con ZWSP)"
-          echo "=========================================="
-
-          TOTAL=0
-          FIXED=0
-
-          while IFS= read -r -d '' FILE; do
-            TOTAL=$((TOTAL + 1))
-
-            mkdir -p "repair-backup/$(dirname "$FILE")" 2>/dev/null || true
-            cp "$FILE" "repair-backup/$FILE" 2>/dev/null || true
-
-            R=$(python3 - "$FILE" <<'PYEOF'
-          import sys
-          import re
-          from pathlib import Path
-
-          p = Path(sys.argv[1])
-
-          try:
-              data = p.read_text(encoding="utf-8")
-          except UnicodeDecodeError:
-              data = p.read_text(encoding="utf-8", errors="replace")
-
-          original = data
-
-          ZWSP = "\u200B"
-
-          def cdata_to_text(m):
-              c = m.group(1)
-              c = c.replace("&", "&amp;")
-              c = c.replace("<", "&lt;")
-              c = c.replace(">", "&gt;")
-              return c
-
-          data = re.sub(
-              r"<!\[CDATA\[(.*?)\]\]>",
-              cdata_to_text,
-              data,
-              flags=re.DOTALL
-          )
-
-          data = data.replace("]]>", "]" + ZWSP + "]>")
-          data = data.replace("]]&gt;", "]" + ZWSP + "]&gt;")
-
-          if data != original:
-              p.write_text(data, encoding="utf-8")
-              print("CHANGED")
-          else:
-              print("UNCHANGED")
-          PYEOF
-            )
-
-            if [ "$R" = "CHANGED" ]; then
-              FIXED=$((FIXED + 1))
-              echo "  FIXED: $FILE"
-            fi
-          done < <(
-            find "$RES_DIR" -type f -name "*.xml" -print0
-          )
-
-          echo ""
-          echo "XML totales: $TOTAL"
-          echo "XML modificados: $FIXED"
-
-
-          echo ""
-          echo "=========================================="
-          echo "3. REVISANDO integers.xml"
-          echo "=========================================="
-
-          INTEGER_COUNT=0
-
-          while IFS= read -r -d '' FILE; do
-
-            INTEGER_COUNT=$((INTEGER_COUNT + 1))
-
-            mkdir -p "repair-backup/$(dirname "$FILE")"
-            cp "$FILE" "repair-backup/$FILE"
-
-            python3 - "$FILE" <<'PYEOF'
-          import sys
-          import re
-          from pathlib import Path
-
-          p = Path(sys.argv[1])
-
-          try:
-              text = p.read_text(encoding="utf-8")
-          except Exception:
-              text = p.read_text(encoding="utf-8", errors="replace")
-
-          pattern = re.compile(
-              r"(<integer\b[^>]*>)(.*?)(</integer>)",
-              re.DOTALL
-          )
-
-          changes = 0
-
-          def repair(match):
-              global changes
-              opening = match.group(1)
-              value = match.group(2).strip()
-              closing = match.group(3)
-
-              if re.fullmatch(r"-?(0|[1-9][0-9]*)", value):
-                  return opening + value + closing
-              if re.fullmatch(r"-?0[xX][0-9a-fA-F]+", value):
-                  return opening + value + closing
-
-              cleaned = value.replace("\n", " ").replace("\r", " ").strip()
-              if re.fullmatch(r"-?(0|[1-9][0-9]*)", cleaned):
-                  changes += 1
-                  return opening + cleaned + closing
-              if re.fullmatch(r"-?0[xX][0-9a-fA-F]+", cleaned):
-                  changes += 1
-                  return opening + cleaned + closing
-
-              changes += 1
-              return opening + "0" + closing
-
-          new_text = pattern.sub(repair, text)
-
-          if new_text != text:
-              p.write_text(new_text, encoding="utf-8")
-
-          print("  Cambios:", changes)
-          PYEOF
-
-          done < <(
-            find "$RES_DIR" \
-              -type f \
-              -path "*/values*/integers.xml" \
-              -print0
-          )
-
-          echo "integers.xml encontrados: $INTEGER_COUNT"
-
-
-          echo ""
-          echo "=========================================="
-          echo "4. RENOMBRANDO 9-PATCH INVALIDOS"
-          echo "=========================================="
-
-          PNG_COUNT=0
-
-          while IFS= read -r -d '' FILE; do
-
-            NEW="${FILE%.9.png}.png"
-            mv "$FILE" "$NEW"
-
-            PNG_COUNT=$((PNG_COUNT + 1))
-          done < <(
-            find "$RES_DIR" \
-              -type f \
-              -name "*.9.png" \
-              -print0
-          )
-
-          echo "9-Patch renombrados a .png: $PNG_COUNT"
-
-
-          echo ""
-          echo "=========================================="
-          echo "5. VALIDACION FINAL"
-          echo "=========================================="
-
-          REMAINING=0
-
-          while IFS= read -r -d '' FILE; do
-            if grep -qF ']]>' "$FILE"; then
-              echo "  AUN TIENE ]]>: $FILE"
-              grep -nF ']]>' "$FILE" | head -3 || true
-              REMAINING=$((REMAINING + 1))
-            fi
-          done < <(
-            find "$RES_DIR" -type f -name "*.xml" -print0
-          )
-
-          echo ""
-          echo "Archivos con ]]> restantes: $REMAINING"
-          echo ""
-          echo "=========================================="
-          echo "   RECURSOS LISTOS PARA RECOMPILAR"
-          echo "=========================================="
-
-
-      - name: 11. Recompilar APK
+      - name: 8. Descompilar con apktool (para rebuild)
         shell: bash
         run: |
           set -e
 
           echo "=========================================="
-          echo "            RECOMPILANDO APK"
+          echo "      DESCOMPILANDO CON APKTOOL"
           echo "=========================================="
 
-          cd output_project
+          rm -rf output_apktool
 
-          if [ ! -f gradlew ]; then
-            echo "ERROR: No existe gradlew."
+          set +e
+          java -jar apktool.jar d \
+            -f \
+            -o output_apktool \
+            input_apk/app.target.apk
+          APKTOOL_D_EXIT=$?
+          set -e
+
+          echo "apktool decode exit: $APKTOOL_D_EXIT"
+
+          if [ ! -d output_apktool ]; then
+            echo "ERROR: apktool no genero output_apktool."
             exit 1
           fi
 
-          chmod +x gradlew
+          echo ""
+          echo "Estructura generada:"
+          ls -la output_apktool/
 
           echo ""
-          echo "Version de Gradle:"
-          ./gradlew --version
+          echo "apktool.yml:"
+          cat output_apktool/apktool.yml
 
-          echo ""
-          echo "Iniciando compilacion..."
-
-          ./gradlew \
-            assembleDebug \
-            --no-daemon \
-            --max-workers=2 \
-            --stacktrace
-
-          echo ""
-          echo "Compilacion terminada."
-
-          echo ""
-          echo "APKs encontrados:"
-
-          find . \
-            -type f \
-            -name "*.apk" \
-            -print
-
-
-      - name: 12. Verificar APK
+      - name: 9. Recompilar con apktool
         shell: bash
         run: |
           set -e
 
-          APK_PATH="output_project/app/build/outputs/apk/debug/app-debug.apk"
+          echo "=========================================="
+          echo "        RECOMPILANDO CON APKTOOL"
+          echo "=========================================="
+
+          rm -f rebuilt.apk
+
+          set +e
+          java -jar apktool.jar b \
+            output_apktool \
+            -o rebuilt.apk
+          APKTOOL_B_EXIT=$?
+          set -e
+
+          echo "apktool build exit: $APKTOOL_B_EXIT"
+
+          if [ ! -f rebuilt.apk ]; then
+            echo "ERROR: rebuilt.apk no fue generado."
+            exit 1
+          fi
+
+          ls -lh rebuilt.apk
+
+      - name: 10. Verificar APK
+        shell: bash
+        run: |
+          set -e
 
           echo "=========================================="
           echo "           VERIFICANDO APK"
           echo "=========================================="
 
-          if [ ! -f "$APK_PATH" ]; then
-            echo "ERROR: No se encontro:"
-            echo "$APK_PATH"
-            exit 1
-          fi
+          ls -lh rebuilt.apk
+          file rebuilt.apk
 
           echo ""
-          echo "APK generado:"
-          ls -lh "$APK_PATH"
+          echo "Entradas del APK:"
+          unzip -l rebuilt.apk | head -20
 
-          echo ""
-          echo "Tamano:"
-          du -h "$APK_PATH"
-
-
-      - name: 13. Subir APK Recompilado
+      - name: 11. Subir APK Recompilado
         uses: actions/upload-artifact@v4
         with:
           name: rebuilt-apk
-          path: output_project/app/build/outputs/apk/debug/app-debug.apk
+          path: rebuilt.apk
           if-no-files-found: error
 
+      - name: 12. Subir Codigo Descompilado (JADX)
+        uses: actions/upload-artifact@v4
+        with:
+          name: decompiled-source
+          path: output_project/
+          if-no-files-found: error
 
-      - name: 14. Sincronizar Codigo Fuente
+      - name: 13. Sincronizar Codigo Fuente
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
@@ -614,31 +252,18 @@ jobs:
           echo "        SINCRONIZANDO CODIGO"
           echo "=========================================="
 
-          git config \
-            --global \
-            user.name \
-            "github-actions[bot]"
-
-          git config \
-            --global \
-            user.email \
-            "github-actions[bot]@users.noreply.github.com"
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
 
           git add output_project/
 
           git status
 
           if git diff-index --quiet HEAD; then
-
             echo "No hay cambios nuevos que commitear."
-
           else
-
-            git commit \
-              -m "feat: Update decompiled source code [Automated CI]"
-
+            git commit -m "feat: Update decompiled source code [Automated CI]"
             git push origin HEAD:main
-
           fi
 
           echo ""

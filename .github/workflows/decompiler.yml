@@ -14,33 +14,22 @@ jobs:
 
     steps:
 
-      # ==================================================
-      # 1. CHECKOUT
-      # ==================================================
       - name: 1. Checkout del Repositorio
         uses: actions/checkout@v4
 
-
-      # ==================================================
-      # 2. JAVA 17
-      # ==================================================
-      - name: 2. Configurar Entorno Java
+      - name: 2. Configurar Java 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
 
-
-      # ==================================================
-      # 3. INSTALAR JADX
-      # ==================================================
       - name: 3. Instalar JADX
         shell: bash
         run: |
           set -e
 
           echo "=========================================="
-          echo "          INSTALACIÓN DE JADX"
+          echo "          INSTALACION DE JADX"
           echo "=========================================="
 
           JADX_TAG=$(curl -fsSL \
@@ -50,14 +39,14 @@ jobs:
             | cut -d '"' -f 4)
 
           if [ -z "$JADX_TAG" ]; then
-            echo "ERROR: No se pudo detectar JADX."
+            echo "ERROR: No se pudo detectar la version de JADX."
             exit 1
           fi
 
           JADX_VERSION="${JADX_TAG#v}"
 
-          echo "Tag: $JADX_TAG"
-          echo "Versión: $JADX_VERSION"
+          echo "Tag detectado: $JADX_TAG"
+          echo "Version: $JADX_VERSION"
 
           JADX_URL="https://github.com/skylot/jadx/releases/download/${JADX_TAG}/jadx-${JADX_VERSION}.zip"
 
@@ -74,26 +63,22 @@ jobs:
 
           chmod +x jadx-tool/bin/jadx
 
-          export PATH="$GITHUB_WORKSPACE/jadx-tool/bin:$PATH"
-
           echo "$GITHUB_WORKSPACE/jadx-tool/bin" >> "$GITHUB_PATH"
+
+          export PATH="$GITHUB_WORKSPACE/jadx-tool/bin:$PATH"
 
           echo ""
           echo "JADX instalado:"
           command -v jadx
           jadx --version
 
-
-      # ==================================================
-      # 4. DESCARGAR APK
-      # ==================================================
       - name: 4. Descargar APK
         shell: bash
         run: |
           set -e
 
           echo "=========================================="
-          echo "           DESCARGA DEL APK"
+          echo "             DESCARGA DEL APK"
           echo "=========================================="
 
           mkdir -p input_apk
@@ -106,7 +91,7 @@ jobs:
             "$APK_URL"
 
           if [ ! -s input_apk/app.target.apk ]; then
-            echo "ERROR: APK no descargado."
+            echo "ERROR: El APK no fue descargado."
             exit 1
           fi
 
@@ -114,17 +99,13 @@ jobs:
           echo "APK descargado:"
           ls -lh input_apk/app.target.apk
 
-
-      # ==================================================
-      # 5. DESCOMPILAR APK
-      # ==================================================
       - name: 5. Descompilar APK
         shell: bash
         run: |
           set -e
 
           echo "=========================================="
-          echo "          DESCOMPILANDO APK"
+          echo "           DESCOMPILANDO APK"
           echo "=========================================="
 
           export PATH="$GITHUB_WORKSPACE/jadx-tool/bin:$PATH"
@@ -147,10 +128,10 @@ jobs:
 
           echo ""
           echo "=========================================="
-          echo "          RESULTADO DE JADX"
+          echo "             RESULTADO JADX"
           echo "=========================================="
 
-          echo "Código de salida: $JADX_EXIT"
+          echo "Codigo de salida: $JADX_EXIT"
 
           if [ ! -d output_project ]; then
             echo "ERROR: No existe output_project."
@@ -162,107 +143,85 @@ jobs:
           echo "Archivos generados: $FILE_COUNT"
 
           if [ "$FILE_COUNT" -eq 0 ]; then
-            echo "ERROR: output_project está vacío."
+            echo "ERROR: output_project esta vacio."
             exit 1
           fi
 
           if [ "$JADX_EXIT" -ne 0 ]; then
-            echo ""
-            echo "AVISO: JADX terminó con errores."
-            echo "El proyecto generado será procesado igualmente."
+            echo "AVISO: JADX termino con errores."
+            echo "El proyecto generado se procesara igualmente."
           fi
 
           echo ""
           echo "Estructura principal:"
 
-          [ -f output_project/build.gradle ] \
-            && echo "OK: output_project/build.gradle" \
-            || echo "AVISO: falta output_project/build.gradle"
+          if [ -f output_project/build.gradle ]; then
+            echo "OK: output_project/build.gradle"
+          else
+            echo "AVISO: falta output_project/build.gradle"
+          fi
 
-          [ -f output_project/app/build.gradle ] \
-            && echo "OK: output_project/app/build.gradle" \
-            || echo "AVISO: falta output_project/app/build.gradle"
+          if [ -f output_project/app/build.gradle ]; then
+            echo "OK: output_project/app/build.gradle"
+          else
+            echo "AVISO: falta output_project/app/build.gradle"
+          fi
 
-          [ -f output_project/settings.gradle ] \
-            && echo "OK: output_project/settings.gradle" \
-            || echo "AVISO: falta output_project/settings.gradle"
+          if [ -f output_project/settings.gradle ]; then
+            echo "OK: output_project/settings.gradle"
+          else
+            echo "AVISO: falta output_project/settings.gradle"
+          fi
 
-
-      # ==================================================
-      # 6. INSPECCIONAR PROYECTO
-      # ==================================================
-      - name: 6. Inspeccionar Proyecto Gradle
+      - name: 6. Inspeccionar Proyecto
         shell: bash
         run: |
           set -e
 
           echo "=========================================="
-          echo "       INSPECCIÓN DEL PROYECTO"
+          echo "        INSPECCION DEL PROYECTO"
           echo "=========================================="
 
           echo ""
-          echo "------------------------------------------"
-          echo "settings.gradle"
-          echo "------------------------------------------"
+          echo "===== settings.gradle ====="
 
           if [ -f output_project/settings.gradle ]; then
             cat output_project/settings.gradle
-          else
-            echo "No existe settings.gradle"
           fi
 
-
           echo ""
-          echo "------------------------------------------"
-          echo "build.gradle PRINCIPAL"
-          echo "------------------------------------------"
+          echo "===== build.gradle ====="
 
           if [ -f output_project/build.gradle ]; then
             cat output_project/build.gradle
-          else
-            echo "No existe build.gradle"
           fi
 
-
           echo ""
-          echo "------------------------------------------"
-          echo "app/build.gradle"
-          echo "------------------------------------------"
+          echo "===== app/build.gradle ====="
 
           if [ -f output_project/app/build.gradle ]; then
             cat output_project/app/build.gradle
-          else
-            echo "No existe app/build.gradle"
           fi
 
-
           echo ""
-          echo "------------------------------------------"
-          echo "gradle.properties EXISTENTE"
-          echo "------------------------------------------"
+          echo "===== gradle.properties ====="
 
           if [ -f output_project/gradle.properties ]; then
             cat output_project/gradle.properties
           else
-            echo "No existe gradle.properties"
+            echo "No existe gradle.properties todavia."
           fi
 
-
-      # ==================================================
-      # 7. INSTALAR GRADLE 8.11.1
-      # ==================================================
       - name: 7. Instalar Gradle 8.11.1
         shell: bash
         run: |
           set -e
 
           echo "=========================================="
-          echo "          INSTALANDO GRADLE"
+          echo "          INSTALANDO GRADLE 8.11.1"
           echo "=========================================="
 
           GRADLE_VERSION="8.11.1"
-
-          echo "Versión seleccionada: $GRADLE_VERSION"
 
           wget \
             --show-progress \
@@ -278,38 +237,27 @@ jobs:
             -d "$HOME/gradle"
 
           export GRADLE_HOME="$HOME/gradle/gradle-${GRADLE_VERSION}"
-
           export PATH="$GRADLE_HOME/bin:$PATH"
 
           echo "$GRADLE_HOME/bin" >> "$GITHUB_PATH"
 
           echo ""
-          echo "Gradle instalado en:"
-          echo "$GRADLE_HOME"
-
-          echo ""
+          echo "Gradle instalado:"
           gradle --version
 
-
-      # ==================================================
-      # 8. CONFIGURAR MEMORIA Y GENERAR WRAPPER
-      # ==================================================
-      - name: 8. Configurar Gradle y generar Wrapper
+      - name: 8. Configurar Gradle y Wrapper
         shell: bash
         run: |
           set -e
 
           echo "=========================================="
-          echo "    CONFIGURANDO MEMORIA DE GRADLE"
+          echo "      CONFIGURANDO GRADLE Y MEMORIA"
           echo "=========================================="
 
           export GRADLE_HOME="$HOME/gradle/gradle-8.11.1"
           export PATH="$GRADLE_HOME/bin:$PATH"
 
           cd output_project
-
-          echo ""
-          echo "Creando gradle.properties..."
 
           cat > gradle.properties <<'PROPERTIES'
 org.gradle.jvmargs=-Xmx6g -XX:MaxMetaspaceSize=1g -Dfile.encoding=UTF-8
@@ -321,13 +269,11 @@ android.enableJetifier=true
 PROPERTIES
 
           echo ""
-          echo "Contenido de gradle.properties:"
+          echo "gradle.properties:"
           cat gradle.properties
 
           echo ""
-          echo "=========================================="
-          echo "       GENERANDO GRADLE WRAPPER"
-          echo "=========================================="
+          echo "Generando Gradle Wrapper..."
 
           gradle wrapper \
             --gradle-version 8.11.1 \
@@ -346,49 +292,32 @@ PROPERTIES
           ls -lh gradlew
 
           echo ""
-          echo "Archivos del wrapper:"
-
-          find gradle -type f -print
-
-          echo ""
-          echo "Versión del wrapper:"
+          echo "Version del wrapper:"
 
           ./gradlew --version
 
-
-      # ==================================================
-      # 9. POST-PROCESAMIENTO
-      # ==================================================
-      - name: 9. Saneamiento del Código
+      - name: 9. Saneamiento del Codigo
         shell: bash
         run: |
           set -e
 
           echo "=========================================="
-          echo "        POST-PROCESAMIENTO"
+          echo "          POST-PROCESAMIENTO"
           echo "=========================================="
 
           if [ -f scripts/post_process.py ]; then
-
             python3 scripts/post_process.py
-
           else
-
             echo "AVISO: scripts/post_process.py no existe."
-
           fi
 
-
-      # ==================================================
-      # 10. RECOMPILAR APK
-      # ==================================================
       - name: 10. Recompilar APK
         shell: bash
         run: |
           set -e
 
           echo "=========================================="
-          echo "          RECOMPILANDO APK"
+          echo "            RECOMPILANDO APK"
           echo "=========================================="
 
           if [ ! -d output_project ]; then
@@ -406,18 +335,15 @@ PROPERTIES
           chmod +x gradlew
 
           echo ""
-          echo "Memoria configurada:"
+          echo "Configuracion de Gradle:"
           cat gradle.properties
 
           echo ""
-          echo "Versión del Gradle Wrapper:"
-
+          echo "Version de Gradle:"
           ./gradlew --version
 
           echo ""
-          echo "=========================================="
-          echo "          INICIANDO COMPILACIÓN"
-          echo "=========================================="
+          echo "Iniciando compilacion..."
 
           ./gradlew \
             assembleDebug \
@@ -427,34 +353,27 @@ PROPERTIES
 
           echo ""
           echo "=========================================="
-          echo "       COMPILACIÓN TERMINADA"
+          echo "        COMPILACION TERMINADA"
           echo "=========================================="
 
           echo ""
           echo "APKs encontrados:"
 
-          find . \
-            -type f \
-            -name "*.apk" \
-            -print
+          find . -type f -name "*.apk" -print
 
-
-      # ==================================================
-      # 11. VERIFICAR APK
-      # ==================================================
-      - name: 11. Verificar APK generado
+      - name: 11. Verificar APK
         shell: bash
         run: |
           set -e
 
           echo "=========================================="
-          echo "        VERIFICANDO APK"
+          echo "           VERIFICANDO APK"
           echo "=========================================="
 
           APK_PATH="output_project/app/build/outputs/apk/debug/app-debug.apk"
 
           if [ ! -f "$APK_PATH" ]; then
-            echo "ERROR: No se encontró el APK esperado:"
+            echo "ERROR: No se encontro:"
             echo "$APK_PATH"
             exit 1
           fi
@@ -464,13 +383,9 @@ PROPERTIES
           ls -lh "$APK_PATH"
 
           echo ""
-          echo "Tamaño:"
+          echo "Tamano:"
           du -h "$APK_PATH"
 
-
-      # ==================================================
-      # 12. SUBIR APK COMO ARTIFACT
-      # ==================================================
       - name: 12. Subir APK Recompilado
         uses: actions/upload-artifact@v4
         with:
@@ -478,11 +393,7 @@ PROPERTIES
           path: output_project/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
 
-
-      # ==================================================
-      # 13. SINCRONIZAR CÓDIGO FUENTE
-      # ==================================================
-      - name: 13. Sincronizar Código Fuente
+      - name: 13. Sincronizar Codigo Fuente
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
@@ -490,7 +401,7 @@ PROPERTIES
           set -e
 
           echo "=========================================="
-          echo "       SINCRONIZANDO CÓDIGO"
+          echo "        SINCRONIZANDO CODIGO"
           echo "=========================================="
 
           git config \
@@ -511,26 +422,15 @@ PROPERTIES
           git status
 
           if git diff-index --quiet HEAD; then
-
-            echo ""
             echo "No hay cambios nuevos que commitear."
-
           else
-
-            echo ""
-            echo "Creando commit..."
-
             git commit \
               -m "feat: Update decompiled source code [Automated CI]"
 
-            echo ""
-            echo "Subiendo cambios..."
-
             git push origin HEAD:main
-
           fi
 
           echo ""
           echo "=========================================="
-          echo "        WORKFLOW TERMINADO"
+          echo "          WORKFLOW TERMINADO"
           echo "=========================================="

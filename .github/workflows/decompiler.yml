@@ -206,15 +206,6 @@ jobs:
             cat output_project/app/build.gradle
           fi
 
-          echo ""
-          echo "===== gradle.properties ====="
-
-          if [ -f output_project/gradle.properties ]; then
-            cat output_project/gradle.properties
-          else
-            echo "No existe gradle.properties todavia."
-          fi
-
 
       - name: 7. Instalar Gradle 8.11.1
         shell: bash
@@ -264,9 +255,6 @@ jobs:
 
           cd output_project
 
-          echo ""
-          echo "Creando gradle.properties..."
-
           printf '%s\n' \
             'org.gradle.jvmargs=-Xmx6g -XX:MaxMetaspaceSize=1g -Dfile.encoding=UTF-8' \
             'org.gradle.workers.max=2' \
@@ -277,7 +265,7 @@ jobs:
             > gradle.properties
 
           echo ""
-          echo "Contenido de gradle.properties:"
+          echo "gradle.properties:"
           cat gradle.properties
 
           echo ""
@@ -296,11 +284,6 @@ jobs:
 
           echo ""
           echo "Wrapper generado correctamente."
-
-          ls -lh gradlew
-
-          echo ""
-          echo "Version del wrapper:"
 
           ./gradlew --version
 
@@ -321,7 +304,7 @@ jobs:
           fi
 
 
-      - name: 10. Reparar Recursos Android Generados por JADX
+      - name: 10. Reparar Recursos Android
         shell: bash
         run: |
           set -u
@@ -337,16 +320,12 @@ jobs:
             exit 0
           fi
 
-          echo ""
-          echo "Directorio de recursos:"
-          echo "$RES_DIR"
-
           rm -rf repair-backup
           mkdir -p repair-backup
 
           echo ""
           echo "=========================================="
-          echo "1. INSPECCIONANDO XML"
+          echo "1. BUSCANDO XML CON PROBLEMAS"
           echo "=========================================="
 
           XML_COUNT=0
@@ -362,36 +341,28 @@ jobs:
               echo "XML problematico:"
               echo "$FILE"
 
-              BACKUP_DIR="repair-backup/$(dirname "$FILE")"
-
-              mkdir -p "$BACKUP_DIR"
+              mkdir -p "repair-backup/$(dirname "$FILE")"
               cp "$FILE" "repair-backup/$FILE"
 
-              python3 - "$FILE" <<'PY'
+              python3 -c '
 import sys
 from pathlib import Path
 
-file = Path(sys.argv[1])
+p = Path(sys.argv[1])
 
 try:
-    data = file.read_text(encoding="utf-8")
+    data = p.read_text(encoding="utf-8")
 except UnicodeDecodeError:
-    data = file.read_text(
-        encoding="utf-8",
-        errors="replace"
-    )
+    data = p.read_text(encoding="utf-8", errors="replace")
 
 data = data.replace("]]>", "]]&gt;")
 
-file.write_text(
-    data,
-    encoding="utf-8"
-)
-PY
+p.write_text(data, encoding="utf-8")
+' "$FILE"
 
               XML_FIXED=$((XML_FIXED + 1))
 
-              echo "  -> Secuencia ]]> corregida."
+              echo "  -> ]]> corregido."
 
             fi
 
@@ -412,81 +383,49 @@ PY
           echo "2. REVISANDO integers.xml"
           echo "=========================================="
 
-          INTEGER_FILES=$(find "$RES_DIR" \
-            -type f \
-            -path "*/values*/integers.xml" \
-            -print)
+          INTEGER_COUNT=0
 
-          if [ -z "$INTEGER_FILES" ]; then
+          while IFS= read -r -d '' FILE; do
 
-            echo "No se encontraron integers.xml."
+            INTEGER_COUNT=$((INTEGER_COUNT + 1))
 
-          else
+            echo ""
+            echo "Revisando:"
+            echo "$FILE"
 
-            while IFS= read -r FILE; do
+            mkdir -p "repair-backup/$(dirname "$FILE")"
+            cp "$FILE" "repair-backup/$FILE"
 
-              echo ""
-              echo "Revisando:"
-              echo "$FILE"
-
-              if [ ! -f "$FILE" ]; then
-                continue
-              fi
-
-              BACKUP_DIR="repair-backup/$(dirname "$FILE")"
-
-              mkdir -p "$BACKUP_DIR"
-              cp "$FILE" "repair-backup/$FILE"
-
-              python3 - "$FILE" <<'PY'
+            python3 -c '
 import sys
 import re
 from pathlib import Path
 
-file = Path(sys.argv[1])
+p = Path(sys.argv[1])
 
 try:
-    text = file.read_text(
-        encoding="utf-8"
-    )
+    text = p.read_text(encoding="utf-8")
 except Exception:
-    text = file.read_text(
-        encoding="utf-8",
-        errors="replace"
-    )
-
-original = text
-
-text = text.replace(
-    "]]>",
-    "]]&gt;"
-)
+    text = p.read_text(encoding="utf-8", errors="replace")
 
 pattern = re.compile(
-    r'(<integer\b[^>]*>)(.*?)(</integer>)',
+    r"(<integer\b[^>]*>)(.*?)(</integer>)",
     re.DOTALL
 )
 
 changes = 0
 
-def repair_integer(match):
-
+def repair(match):
     global changes
 
     opening = match.group(1)
     value = match.group(2).strip()
     closing = match.group(3)
 
-    if re.fullmatch(
-        r'-?(0|[1-9][0-9]*)',
-        value
-    ):
+    if re.fullmatch(r"-?(0|[1-9][0-9]*)", value):
         return opening + value + closing
 
-    if re.fullmatch(
-        r'-?0[xX][0-9a-fA-F]+',
-        value
-    ):
+    if re.fullmatch(r"-?0[xX][0-9a-fA-F]+", value):
         return opening + value + closing
 
     cleaned = (
@@ -496,123 +435,51 @@ def repair_integer(match):
         .strip()
     )
 
-    if re.fullmatch(
-        r'-?(0|[1-9][0-9]*)',
-        cleaned
-    ):
+    if re.fullmatch(r"-?(0|[1-9][0-9]*)", cleaned):
         changes += 1
-
-        print(
-            f"  Reparando integer: "
-            f"{value!r} -> {cleaned!r}"
-        )
-
+        print("  Reparando:", repr(value), "->", repr(cleaned))
         return opening + cleaned + closing
 
-    if re.fullmatch(
-        r'-?0[xX][0-9a-fA-F]+',
-        cleaned
-    ):
+    if re.fullmatch(r"-?0[xX][0-9a-fA-F]+", cleaned):
         changes += 1
-
-        print(
-            f"  Reparando integer: "
-            f"{value!r} -> {cleaned!r}"
-        )
-
+        print("  Reparando:", repr(value), "->", repr(cleaned))
         return opening + cleaned + closing
 
     changes += 1
-
-    print(
-        f"  AVISO: integer invalido: "
-        f"{value!r}"
-    )
-
-    print(
-        "  Sustituyendo por 0."
-    )
+    print("  AVISO integer invalido:", repr(value))
+    print("  Sustituyendo por 0.")
 
     return opening + "0" + closing
 
+new_text = pattern.sub(repair, text)
 
-text = pattern.sub(
-    repair_integer,
-    text
-)
+if new_text != text:
+    p.write_text(new_text, encoding="utf-8")
 
-if text != original:
-
-    file.write_text(
-        text,
-        encoding="utf-8"
-    )
-
-print(
-    f"  Cambios realizados: {changes}"
-)
-PY
-
-            done <<< "$INTEGER_FILES"
-
-          fi
-
-
-          echo ""
-          echo "=========================================="
-          echo "3. INSPECCIONANDO PNG 9-PATCH"
-          echo "=========================================="
-
-          PNG_COUNT=0
-          PNG_BAD=0
-
-          while IFS= read -r -d '' FILE; do
-
-            PNG_COUNT=$((PNG_COUNT + 1))
-
-            if command -v file >/dev/null 2>&1; then
-
-              INFO=$(file "$FILE" 2>/dev/null || true)
-
-              if echo "$INFO" | grep -qi "PNG"; then
-
-                echo "OK PNG: $FILE"
-
-              else
-
-                echo ""
-                echo "AVISO PNG sospechoso:"
-                echo "$FILE"
-                echo "$INFO"
-
-                PNG_BAD=$((PNG_BAD + 1))
-
-              fi
-
-            fi
+print("  Cambios:", changes)
+' "$FILE"
 
           done < <(
             find "$RES_DIR" \
               -type f \
-              -name "*.9.png" \
+              -path "*/values*/integers.xml" \
               -print0
           )
 
           echo ""
-          echo "9-Patch encontrados: $PNG_COUNT"
-          echo "9-Patch sospechosos: $PNG_BAD"
+          echo "integer.xml encontrados: $INTEGER_COUNT"
 
 
           echo ""
           echo "=========================================="
-          echo "4. VALIDACION XML"
+          echo "3. VALIDANDO XML"
           echo "=========================================="
 
           INVALID_XML=0
 
           while IFS= read -r -d '' FILE; do
 
-            if ! python3 - "$FILE" <<'PY'
+            if ! python3 -c '
 import sys
 import xml.etree.ElementTree as ET
 
@@ -620,7 +487,7 @@ try:
     ET.parse(sys.argv[1])
 except Exception:
     sys.exit(1)
-PY
+' "$FILE"
             then
 
               echo "XML invalido:"
@@ -643,27 +510,52 @@ PY
 
           echo ""
           echo "=========================================="
-          echo "5. RESUMEN"
+          echo "4. INSPECCIONANDO 9-PATCH"
+          echo "=========================================="
+
+          PNG_COUNT=0
+          PNG_BAD=0
+
+          while IFS= read -r -d '' FILE; do
+
+            PNG_COUNT=$((PNG_COUNT + 1))
+
+            INFO=$(file "$FILE" 2>/dev/null || true)
+
+            if echo "$INFO" | grep -qi "PNG"; then
+              echo "OK: $FILE"
+            else
+              echo "SOSPECHOSO: $FILE"
+              echo "$INFO"
+              PNG_BAD=$((PNG_BAD + 1))
+            fi
+
+          done < <(
+            find "$RES_DIR" \
+              -type f \
+              -name "*.9.png" \
+              -print0
+          )
+
+          echo ""
+          echo "9-Patch encontrados: $PNG_COUNT"
+          echo "9-Patch sospechosos: $PNG_BAD"
+
+
+          echo ""
+          echo "=========================================="
+          echo "5. RESUMEN DE REPARACION"
           echo "=========================================="
 
           echo "XML inspeccionados: $XML_COUNT"
           echo "XML reparados: $XML_FIXED"
-          echo "9-Patch encontrados: $PNG_COUNT"
+          echo "integer.xml: $INTEGER_COUNT"
+          echo "XML invalidos: $INVALID_XML"
+          echo "9-Patch: $PNG_COUNT"
           echo "9-Patch sospechosos: $PNG_BAD"
-          echo "XML invalidos restantes: $INVALID_XML"
 
           echo ""
-          echo "Backup de archivos modificados:"
-
-          find repair-backup \
-            -type f \
-            2>/dev/null \
-            | head -50 || true
-
-          echo ""
-          echo "=========================================="
-          echo "RECURSOS LISTOS PARA AAPT2"
-          echo "=========================================="
+          echo "Recursos preparados para AAPT2."
 
 
       - name: 11. Recompilar APK
@@ -675,11 +567,6 @@ PY
           echo "            RECOMPILANDO APK"
           echo "=========================================="
 
-          if [ ! -d output_project ]; then
-            echo "ERROR: No existe output_project."
-            exit 1
-          fi
-
           cd output_project
 
           if [ ! -f gradlew ]; then
@@ -688,10 +575,6 @@ PY
           fi
 
           chmod +x gradlew
-
-          echo ""
-          echo "Configuracion de Gradle:"
-          cat gradle.properties
 
           echo ""
           echo "Version de Gradle:"
@@ -707,9 +590,7 @@ PY
             --stacktrace
 
           echo ""
-          echo "=========================================="
-          echo "        COMPILACION TERMINADA"
-          echo "=========================================="
+          echo "Compilacion terminada."
 
           echo ""
           echo "APKs encontrados:"
@@ -725,11 +606,11 @@ PY
         run: |
           set -e
 
+          APK_PATH="output_project/app/build/outputs/apk/debug/app-debug.apk"
+
           echo "=========================================="
           echo "           VERIFICANDO APK"
           echo "=========================================="
-
-          APK_PATH="output_project/app/build/outputs/apk/debug/app-debug.apk"
 
           if [ ! -f "$APK_PATH" ]; then
             echo "ERROR: No se encontro:"
@@ -738,7 +619,7 @@ PY
           fi
 
           echo ""
-          echo "APK generado correctamente:"
+          echo "APK generado:"
           ls -lh "$APK_PATH"
 
           echo ""
@@ -776,9 +657,6 @@ PY
             "github-actions[bot]@users.noreply.github.com"
 
           git add output_project/
-
-          echo ""
-          echo "Estado de Git:"
 
           git status
 

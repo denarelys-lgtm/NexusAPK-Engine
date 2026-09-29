@@ -32,11 +32,13 @@ jobs:
           echo "          INSTALACION DE JADX"
           echo "=========================================="
 
+          API_URL="https://api.github.com/repos/skylot/jadx/releases/latest"
+
           JADX_TAG=$(curl -fsSL \
-            "https://api.github.com/repos/skylot/jadx/releases/latest" \
-            | grep '"tag_name"' \
-            | head -1 \
-            | cut -d '"' -f 4)
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Accept: application/vnd.github+json" \
+            "$API_URL" \
+            | python3 -c "import sys, json; print(json.load(sys.stdin)['tag_name'])")
 
           if [ -z "$JADX_TAG" ]; then
             echo "ERROR: No se pudo detectar la version de JADX."
@@ -49,6 +51,8 @@ jobs:
           echo "Version: $JADX_VERSION"
 
           JADX_URL="https://github.com/skylot/jadx/releases/download/${JADX_TAG}/jadx-${JADX_VERSION}.zip"
+
+          echo "URL de descarga: $JADX_URL"
 
           wget \
             --show-progress \
@@ -325,7 +329,17 @@ jobs:
 
           echo ""
           echo "=========================================="
-          echo "1. BUSCANDO XML CON PROBLEMAS"
+          echo "1. ELIMINANDO LOCALES (values-XX)"
+          echo "=========================================="
+
+          LOCALES=$(find "$RES_DIR" -maxdepth 1 -type d -name "values-*" | wc -l)
+          echo "Locales encontrados: $LOCALES"
+          find "$RES_DIR" -maxdepth 1 -type d -name "values-*" -print -exec rm -rf {} +
+          echo "Locales eliminados."
+
+          echo ""
+          echo "=========================================="
+          echo "2. EXPANDIENDO CDATA Y ESCAPANDO ]]>"
           echo "=========================================="
 
           XML_COUNT=0
@@ -335,7 +349,7 @@ jobs:
 
             XML_COUNT=$((XML_COUNT + 1))
 
-            if grep -qF ']]>' "$FILE"; then
+            if grep -qF ']]>' "$FILE" || grep -qF '<![CDATA[' "$FILE"; then
 
               echo ""
               echo "XML problematico:"
@@ -346,6 +360,7 @@ jobs:
 
               python3 - "$FILE" <<'PYEOF'
           import sys
+          import re
           from pathlib import Path
 
           p = Path(sys.argv[1])
@@ -355,15 +370,27 @@ jobs:
           except UnicodeDecodeError:
               data = p.read_text(encoding="utf-8", errors="replace")
 
+          def cdata_to_text(m):
+              content = m.group(1)
+              content = content.replace("&", "&amp;")
+              content = content.replace("<", "&lt;")
+              content = content.replace(">", "&gt;")
+              return content
+
+          data = re.sub(
+              r"<!\[CDATA\[(.*?)\]\]>",
+              cdata_to_text,
+              data,
+              flags=re.DOTALL
+          )
+
           data = data.replace("]]>", "]]&gt;")
 
           p.write_text(data, encoding="utf-8")
+          print("  -> CDATA expandida y ]]> escapado.")
           PYEOF
 
               XML_FIXED=$((XML_FIXED + 1))
-
-              echo "  -> ]]> corregido."
-
             fi
 
           done < <(
@@ -380,7 +407,7 @@ jobs:
 
           echo ""
           echo "=========================================="
-          echo "2. REVISANDO integers.xml"
+          echo "3. REVISANDO integers.xml"
           echo "=========================================="
 
           INTEGER_COUNT=0
@@ -388,10 +415,6 @@ jobs:
           while IFS= read -r -d '' FILE; do
 
             INTEGER_COUNT=$((INTEGER_COUNT + 1))
-
-            echo ""
-            echo "Revisando:"
-            echo "$FILE"
 
             mkdir -p "repair-backup/$(dirname "$FILE")"
             cp "$FILE" "repair-backup/$FILE"
@@ -417,38 +440,24 @@ jobs:
 
           def repair(match):
               global changes
-
               opening = match.group(1)
               value = match.group(2).strip()
               closing = match.group(3)
 
               if re.fullmatch(r"-?(0|[1-9][0-9]*)", value):
                   return opening + value + closing
-
               if re.fullmatch(r"-?0[xX][0-9a-fA-F]+", value):
                   return opening + value + closing
 
-              cleaned = (
-                  value
-                  .replace("\n", " ")
-                  .replace("\r", " ")
-                  .strip()
-              )
-
+              cleaned = value.replace("\n", " ").replace("\r", " ").strip()
               if re.fullmatch(r"-?(0|[1-9][0-9]*)", cleaned):
                   changes += 1
-                  print("  Reparando:", repr(value), "->", repr(cleaned))
                   return opening + cleaned + closing
-
               if re.fullmatch(r"-?0[xX][0-9a-fA-F]+", cleaned):
                   changes += 1
-                  print("  Reparando:", repr(value), "->", repr(cleaned))
                   return opening + cleaned + closing
 
               changes += 1
-              print("  AVISO integer invalido:", repr(value))
-              print("  Sustituyendo por 0.")
-
               return opening + "0" + closing
 
           new_text = pattern.sub(repair, text)
@@ -466,70 +475,22 @@ jobs:
               -print0
           )
 
-          echo ""
-          echo "integer.xml encontrados: $INTEGER_COUNT"
+          echo "integers.xml encontrados: $INTEGER_COUNT"
 
 
           echo ""
           echo "=========================================="
-          echo "3. VALIDANDO XML"
-          echo "=========================================="
-
-          INVALID_XML=0
-
-          while IFS= read -r -d '' FILE; do
-
-            if ! python3 - "$FILE" <<'PYEOF'
-          import sys
-          import xml.etree.ElementTree as ET
-
-          try:
-              ET.parse(sys.argv[1])
-          except Exception:
-              sys.exit(1)
-          PYEOF
-            then
-
-              echo "XML invalido:"
-              echo "$FILE"
-
-              INVALID_XML=$((INVALID_XML + 1))
-
-            fi
-
-          done < <(
-            find "$RES_DIR" \
-              -type f \
-              -name "*.xml" \
-              -print0
-          )
-
-          echo ""
-          echo "XML invalidos restantes: $INVALID_XML"
-
-
-          echo ""
-          echo "=========================================="
-          echo "4. INSPECCIONANDO 9-PATCH"
+          echo "4. RENOMBRANDO 9-PATCH INVALIDOS"
           echo "=========================================="
 
           PNG_COUNT=0
-          PNG_BAD=0
 
           while IFS= read -r -d '' FILE; do
 
+            NEW="${FILE%.9.png}.png"
+            mv "$FILE" "$NEW"
+
             PNG_COUNT=$((PNG_COUNT + 1))
-
-            INFO=$(file "$FILE" 2>/dev/null || true)
-
-            if echo "$INFO" | grep -qi "PNG"; then
-              echo "OK: $FILE"
-            else
-              echo "SOSPECHOSO: $FILE"
-              echo "$INFO"
-              PNG_BAD=$((PNG_BAD + 1))
-            fi
-
           done < <(
             find "$RES_DIR" \
               -type f \
@@ -537,25 +498,40 @@ jobs:
               -print0
           )
 
-          echo ""
-          echo "9-Patch encontrados: $PNG_COUNT"
-          echo "9-Patch sospechosos: $PNG_BAD"
+          echo "9-Patch renombrados a .png: $PNG_COUNT"
 
 
           echo ""
           echo "=========================================="
-          echo "5. RESUMEN DE REPARACION"
+          echo "5. VALIDACION FINAL"
           echo "=========================================="
 
-          echo "XML inspeccionados: $XML_COUNT"
-          echo "XML reparados: $XML_FIXED"
-          echo "integer.xml: $INTEGER_COUNT"
-          echo "XML invalidos: $INVALID_XML"
-          echo "9-Patch: $PNG_COUNT"
-          echo "9-Patch sospechosos: $PNG_BAD"
+          INVALID_XML=0
+
+          while IFS= read -r -d '' FILE; do
+            if ! python3 - "$FILE" <<'PYEOF'
+          import sys
+          import xml.etree.ElementTree as ET
+          try:
+              ET.parse(sys.argv[1])
+          except Exception as e:
+              print("  ", e, file=sys.stderr)
+              sys.exit(1)
+          PYEOF
+            then
+              echo "XML invalido: $FILE"
+              INVALID_XML=$((INVALID_XML + 1))
+            fi
+          done < <(
+            find "$RES_DIR" -type f -name "*.xml" -print0
+          )
 
           echo ""
-          echo "Recursos preparados para AAPT2."
+          echo "XML invalidos restantes: $INVALID_XML"
+          echo ""
+          echo "=========================================="
+          echo "   RECURSOS LISTOS PARA RECOMPILAR"
+          echo "=========================================="
 
 
       - name: 11. Recompilar APK

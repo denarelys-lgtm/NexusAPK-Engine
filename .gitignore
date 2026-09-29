@@ -1,0 +1,6 @@
+# Bloquear cualquier archivo APK en todo el repositorio
+*.apk
+input_apk/
+output_project/
+jadx-tool/
+.gradle/

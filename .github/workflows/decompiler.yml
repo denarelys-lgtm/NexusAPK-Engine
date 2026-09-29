@@ -1,0 +1,79 @@
+name: NexusAPK Pipeline
+
+on:
+  push:
+    paths:
+      - 'input_apk/**'
+  workflow_dispatch:
+
+jobs:
+  process-apk:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 1. Checkout del Repositorio
+        uses: actions/checkout@v4
+
+      - name: 2. Configurar Entorno Java (JDK 17)
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: 3. Instalar JADX CLI Moderno
+        run: |
+          JADX_VERSION=$(curl -s https://api.github.com/repos/skylot/jadx/releases/latest | grep "tag_name" | cut -d '"' -f 4)
+          wget https://github.com/skylot/jadx/releases/download/$\{JADX_VERSION\}/jadx-$\{JADX_VERSION\}.zip
+          unzip -q jadx-${JADX_VERSION}.zip -d jadx-tool
+          sudo chmod +x jadx-tool/bin/jadx
+          echo "$GITHUB_WORKSPACE/jadx-tool/bin" >> $GITHUB_PATH
+
+      - name: 4. Descargar APK desde GitHub Releases
+        run: |
+          mkdir -p input_apk output_project
+          echo "Descargando APK desde el Release oficial..."
+          wget -O input_apk/app.target.apk "https://github.com/denarelys-lgtm/NexusAPK-Engine/releases/download/Apk/tu_app.apk"
+
+      - name: 5. Descompilar APK a Proyecto Gradle Java
+        run: |
+          TARGET_APK="input_apk/app.target.apk"
+          echo "Descompilando: $TARGET_APK..."
+          jadx -d output_project \
+               --export-gradle \
+               --deobf \
+               --show-bad-code \
+               --threads-count 4 \
+               "$TARGET_APK"
+
+      - name: 6. Saneamiento Inteligente del Código
+        run: |
+          python3 scripts/post_process.py || echo "Post-procesamiento finalizado con avisos."
+
+      - name: 7. Recompilar el Proyecto a un Nuevo APK con Gradle
+        run: |
+          cd output_project
+          chmod +x gradlew
+          echo "Compilando el proyecto Gradle generado..."
+          ./gradlew assembleDebug
+
+      - name: 8. Subir el APK Recompilado como Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: rebuilt-apk
+          path: output_project/app/build/outputs/apk/debug/app-debug.apk
+
+      - name: 9. Sincronizar Código Fuente al Repositorio
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git add output_project/
+          git status
+          
+          if git diff-index --quiet HEAD; then
+            echo "No hay cambios nuevos que commitear."
+          else
+            git commit -m "feat: Update decompiled source code [Automated CI]"
+            git push origin HEAD:main
+          fi

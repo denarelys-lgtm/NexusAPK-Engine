@@ -321,7 +321,352 @@ jobs:
           fi
 
 
-      - name: 10. Recompilar APK
+      - name: 10. Reparar Recursos Android Generados por JADX
+        shell: bash
+        run: |
+          set -u
+
+          echo "=========================================="
+          echo "     REPARACION AUTOMATICA DE RECURSOS"
+          echo "=========================================="
+
+          RES_DIR="output_project/app/src/main/res"
+
+          if [ ! -d "$RES_DIR" ]; then
+            echo "AVISO: No existe $RES_DIR"
+            exit 0
+          fi
+
+          echo ""
+          echo "Directorio de recursos:"
+          echo "$RES_DIR"
+
+          rm -rf repair-backup
+          mkdir -p repair-backup
+
+          echo ""
+          echo "=========================================="
+          echo "1. INSPECCIONANDO XML"
+          echo "=========================================="
+
+          XML_COUNT=0
+          XML_FIXED=0
+
+          while IFS= read -r -d '' FILE; do
+
+            XML_COUNT=$((XML_COUNT + 1))
+
+            if grep -qF ']]>' "$FILE"; then
+
+              echo ""
+              echo "XML problematico:"
+              echo "$FILE"
+
+              BACKUP_DIR="repair-backup/$(dirname "$FILE")"
+
+              mkdir -p "$BACKUP_DIR"
+              cp "$FILE" "repair-backup/$FILE"
+
+              python3 - "$FILE" <<'PY'
+import sys
+from pathlib import Path
+
+file = Path(sys.argv[1])
+
+try:
+    data = file.read_text(encoding="utf-8")
+except UnicodeDecodeError:
+    data = file.read_text(
+        encoding="utf-8",
+        errors="replace"
+    )
+
+data = data.replace("]]>", "]]&gt;")
+
+file.write_text(
+    data,
+    encoding="utf-8"
+)
+PY
+
+              XML_FIXED=$((XML_FIXED + 1))
+
+              echo "  -> Secuencia ]]> corregida."
+
+            fi
+
+          done < <(
+            find "$RES_DIR" \
+              -type f \
+              -name "*.xml" \
+              -print0
+          )
+
+          echo ""
+          echo "XML inspeccionados: $XML_COUNT"
+          echo "XML reparados: $XML_FIXED"
+
+
+          echo ""
+          echo "=========================================="
+          echo "2. REVISANDO integers.xml"
+          echo "=========================================="
+
+          INTEGER_FILES=$(find "$RES_DIR" \
+            -type f \
+            -path "*/values*/integers.xml" \
+            -print)
+
+          if [ -z "$INTEGER_FILES" ]; then
+
+            echo "No se encontraron integers.xml."
+
+          else
+
+            while IFS= read -r FILE; do
+
+              echo ""
+              echo "Revisando:"
+              echo "$FILE"
+
+              if [ ! -f "$FILE" ]; then
+                continue
+              fi
+
+              BACKUP_DIR="repair-backup/$(dirname "$FILE")"
+
+              mkdir -p "$BACKUP_DIR"
+              cp "$FILE" "repair-backup/$FILE"
+
+              python3 - "$FILE" <<'PY'
+import sys
+import re
+from pathlib import Path
+
+file = Path(sys.argv[1])
+
+try:
+    text = file.read_text(
+        encoding="utf-8"
+    )
+except Exception:
+    text = file.read_text(
+        encoding="utf-8",
+        errors="replace"
+    )
+
+original = text
+
+text = text.replace(
+    "]]>",
+    "]]&gt;"
+)
+
+pattern = re.compile(
+    r'(<integer\b[^>]*>)(.*?)(</integer>)',
+    re.DOTALL
+)
+
+changes = 0
+
+def repair_integer(match):
+
+    global changes
+
+    opening = match.group(1)
+    value = match.group(2).strip()
+    closing = match.group(3)
+
+    if re.fullmatch(
+        r'-?(0|[1-9][0-9]*)',
+        value
+    ):
+        return opening + value + closing
+
+    if re.fullmatch(
+        r'-?0[xX][0-9a-fA-F]+',
+        value
+    ):
+        return opening + value + closing
+
+    cleaned = (
+        value
+        .replace("\n", " ")
+        .replace("\r", " ")
+        .strip()
+    )
+
+    if re.fullmatch(
+        r'-?(0|[1-9][0-9]*)',
+        cleaned
+    ):
+        changes += 1
+
+        print(
+            f"  Reparando integer: "
+            f"{value!r} -> {cleaned!r}"
+        )
+
+        return opening + cleaned + closing
+
+    if re.fullmatch(
+        r'-?0[xX][0-9a-fA-F]+',
+        cleaned
+    ):
+        changes += 1
+
+        print(
+            f"  Reparando integer: "
+            f"{value!r} -> {cleaned!r}"
+        )
+
+        return opening + cleaned + closing
+
+    changes += 1
+
+    print(
+        f"  AVISO: integer invalido: "
+        f"{value!r}"
+    )
+
+    print(
+        "  Sustituyendo por 0."
+    )
+
+    return opening + "0" + closing
+
+
+text = pattern.sub(
+    repair_integer,
+    text
+)
+
+if text != original:
+
+    file.write_text(
+        text,
+        encoding="utf-8"
+    )
+
+print(
+    f"  Cambios realizados: {changes}"
+)
+PY
+
+            done <<< "$INTEGER_FILES"
+
+          fi
+
+
+          echo ""
+          echo "=========================================="
+          echo "3. INSPECCIONANDO PNG 9-PATCH"
+          echo "=========================================="
+
+          PNG_COUNT=0
+          PNG_BAD=0
+
+          while IFS= read -r -d '' FILE; do
+
+            PNG_COUNT=$((PNG_COUNT + 1))
+
+            if command -v file >/dev/null 2>&1; then
+
+              INFO=$(file "$FILE" 2>/dev/null || true)
+
+              if echo "$INFO" | grep -qi "PNG"; then
+
+                echo "OK PNG: $FILE"
+
+              else
+
+                echo ""
+                echo "AVISO PNG sospechoso:"
+                echo "$FILE"
+                echo "$INFO"
+
+                PNG_BAD=$((PNG_BAD + 1))
+
+              fi
+
+            fi
+
+          done < <(
+            find "$RES_DIR" \
+              -type f \
+              -name "*.9.png" \
+              -print0
+          )
+
+          echo ""
+          echo "9-Patch encontrados: $PNG_COUNT"
+          echo "9-Patch sospechosos: $PNG_BAD"
+
+
+          echo ""
+          echo "=========================================="
+          echo "4. VALIDACION XML"
+          echo "=========================================="
+
+          INVALID_XML=0
+
+          while IFS= read -r -d '' FILE; do
+
+            if ! python3 - "$FILE" <<'PY'
+import sys
+import xml.etree.ElementTree as ET
+
+try:
+    ET.parse(sys.argv[1])
+except Exception:
+    sys.exit(1)
+PY
+            then
+
+              echo "XML invalido:"
+              echo "$FILE"
+
+              INVALID_XML=$((INVALID_XML + 1))
+
+            fi
+
+          done < <(
+            find "$RES_DIR" \
+              -type f \
+              -name "*.xml" \
+              -print0
+          )
+
+          echo ""
+          echo "XML invalidos restantes: $INVALID_XML"
+
+
+          echo ""
+          echo "=========================================="
+          echo "5. RESUMEN"
+          echo "=========================================="
+
+          echo "XML inspeccionados: $XML_COUNT"
+          echo "XML reparados: $XML_FIXED"
+          echo "9-Patch encontrados: $PNG_COUNT"
+          echo "9-Patch sospechosos: $PNG_BAD"
+          echo "XML invalidos restantes: $INVALID_XML"
+
+          echo ""
+          echo "Backup de archivos modificados:"
+
+          find repair-backup \
+            -type f \
+            2>/dev/null \
+            | head -50 || true
+
+          echo ""
+          echo "=========================================="
+          echo "RECURSOS LISTOS PARA AAPT2"
+          echo "=========================================="
+
+
+      - name: 11. Recompilar APK
         shell: bash
         run: |
           set -e
@@ -369,10 +714,13 @@ jobs:
           echo ""
           echo "APKs encontrados:"
 
-          find . -type f -name "*.apk" -print
+          find . \
+            -type f \
+            -name "*.apk" \
+            -print
 
 
-      - name: 11. Verificar APK
+      - name: 12. Verificar APK
         shell: bash
         run: |
           set -e
@@ -398,7 +746,7 @@ jobs:
           du -h "$APK_PATH"
 
 
-      - name: 12. Subir APK Recompilado
+      - name: 13. Subir APK Recompilado
         uses: actions/upload-artifact@v4
         with:
           name: rebuilt-apk
@@ -406,7 +754,7 @@ jobs:
           if-no-files-found: error
 
 
-      - name: 13. Sincronizar Codigo Fuente
+      - name: 14. Sincronizar Codigo Fuente
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
@@ -435,12 +783,16 @@ jobs:
           git status
 
           if git diff-index --quiet HEAD; then
+
             echo "No hay cambios nuevos que commitear."
+
           else
+
             git commit \
               -m "feat: Update decompiled source code [Automated CI]"
 
             git push origin HEAD:main
+
           fi
 
           echo ""

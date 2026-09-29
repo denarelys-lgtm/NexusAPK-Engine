@@ -344,21 +344,21 @@ jobs:
               mkdir -p "repair-backup/$(dirname "$FILE")"
               cp "$FILE" "repair-backup/$FILE"
 
-              python3 -c '
-import sys
-from pathlib import Path
+              python3 - "$FILE" <<'PYEOF'
+          import sys
+          from pathlib import Path
 
-p = Path(sys.argv[1])
+          p = Path(sys.argv[1])
 
-try:
-    data = p.read_text(encoding="utf-8")
-except UnicodeDecodeError:
-    data = p.read_text(encoding="utf-8", errors="replace")
+          try:
+              data = p.read_text(encoding="utf-8")
+          except UnicodeDecodeError:
+              data = p.read_text(encoding="utf-8", errors="replace")
 
-data = data.replace("]]>", "]]&gt;")
+          data = data.replace("]]>", "]]&gt;")
 
-p.write_text(data, encoding="utf-8")
-' "$FILE"
+          p.write_text(data, encoding="utf-8")
+          PYEOF
 
               XML_FIXED=$((XML_FIXED + 1))
 
@@ -396,68 +396,68 @@ p.write_text(data, encoding="utf-8")
             mkdir -p "repair-backup/$(dirname "$FILE")"
             cp "$FILE" "repair-backup/$FILE"
 
-            python3 -c '
-import sys
-import re
-from pathlib import Path
+            python3 - "$FILE" <<'PYEOF'
+          import sys
+          import re
+          from pathlib import Path
 
-p = Path(sys.argv[1])
+          p = Path(sys.argv[1])
 
-try:
-    text = p.read_text(encoding="utf-8")
-except Exception:
-    text = p.read_text(encoding="utf-8", errors="replace")
+          try:
+              text = p.read_text(encoding="utf-8")
+          except Exception:
+              text = p.read_text(encoding="utf-8", errors="replace")
 
-pattern = re.compile(
-    r"(<integer\b[^>]*>)(.*?)(</integer>)",
-    re.DOTALL
-)
+          pattern = re.compile(
+              r"(<integer\b[^>]*>)(.*?)(</integer>)",
+              re.DOTALL
+          )
 
-changes = 0
+          changes = 0
 
-def repair(match):
-    global changes
+          def repair(match):
+              global changes
 
-    opening = match.group(1)
-    value = match.group(2).strip()
-    closing = match.group(3)
+              opening = match.group(1)
+              value = match.group(2).strip()
+              closing = match.group(3)
 
-    if re.fullmatch(r"-?(0|[1-9][0-9]*)", value):
-        return opening + value + closing
+              if re.fullmatch(r"-?(0|[1-9][0-9]*)", value):
+                  return opening + value + closing
 
-    if re.fullmatch(r"-?0[xX][0-9a-fA-F]+", value):
-        return opening + value + closing
+              if re.fullmatch(r"-?0[xX][0-9a-fA-F]+", value):
+                  return opening + value + closing
 
-    cleaned = (
-        value
-        .replace("\n", " ")
-        .replace("\r", " ")
-        .strip()
-    )
+              cleaned = (
+                  value
+                  .replace("\n", " ")
+                  .replace("\r", " ")
+                  .strip()
+              )
 
-    if re.fullmatch(r"-?(0|[1-9][0-9]*)", cleaned):
-        changes += 1
-        print("  Reparando:", repr(value), "->", repr(cleaned))
-        return opening + cleaned + closing
+              if re.fullmatch(r"-?(0|[1-9][0-9]*)", cleaned):
+                  changes += 1
+                  print("  Reparando:", repr(value), "->", repr(cleaned))
+                  return opening + cleaned + closing
 
-    if re.fullmatch(r"-?0[xX][0-9a-fA-F]+", cleaned):
-        changes += 1
-        print("  Reparando:", repr(value), "->", repr(cleaned))
-        return opening + cleaned + closing
+              if re.fullmatch(r"-?0[xX][0-9a-fA-F]+", cleaned):
+                  changes += 1
+                  print("  Reparando:", repr(value), "->", repr(cleaned))
+                  return opening + cleaned + closing
 
-    changes += 1
-    print("  AVISO integer invalido:", repr(value))
-    print("  Sustituyendo por 0.")
+              changes += 1
+              print("  AVISO integer invalido:", repr(value))
+              print("  Sustituyendo por 0.")
 
-    return opening + "0" + closing
+              return opening + "0" + closing
 
-new_text = pattern.sub(repair, text)
+          new_text = pattern.sub(repair, text)
 
-if new_text != text:
-    p.write_text(new_text, encoding="utf-8")
+          if new_text != text:
+              p.write_text(new_text, encoding="utf-8")
 
-print("  Cambios:", changes)
-' "$FILE"
+          print("  Cambios:", changes)
+          PYEOF
 
           done < <(
             find "$RES_DIR" \
@@ -479,15 +479,15 @@ print("  Cambios:", changes)
 
           while IFS= read -r -d '' FILE; do
 
-            if ! python3 -c '
-import sys
-import xml.etree.ElementTree as ET
+            if ! python3 - "$FILE" <<'PYEOF'
+          import sys
+          import xml.etree.ElementTree as ET
 
-try:
-    ET.parse(sys.argv[1])
-except Exception:
-    sys.exit(1)
-' "$FILE"
+          try:
+              ET.parse(sys.argv[1])
+          except Exception:
+              sys.exit(1)
+          PYEOF
             then
 
               echo "XML invalido:"

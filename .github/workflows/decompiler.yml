@@ -23,6 +23,7 @@ jobs:
       - name: 3. Instalar JADX CLI Moderno
         run: |
           JADX_VERSION=$(curl -s https://api.github.com/repos/skylot/jadx/releases/latest | grep "tag_name" | cut -d '"' -f 4)
+          echo "Versión detectada de JADX: $JADX_VERSION"
           wget https://github.com/skylot/jadx/releases/download/$\{JADX_VERSION\}/jadx-$\{JADX_VERSION\}.zip
           unzip -q jadx-${JADX_VERSION}.zip -d jadx-tool
           sudo chmod +x jadx-tool/bin/jadx

@@ -72,6 +72,7 @@ jobs:
           command -v jadx
           jadx --version
 
+
       - name: 4. Descargar APK
         shell: bash
         run: |
@@ -98,6 +99,7 @@ jobs:
           echo ""
           echo "APK descargado:"
           ls -lh input_apk/app.target.apk
+
 
       - name: 5. Descompilar APK
         shell: bash
@@ -173,6 +175,7 @@ jobs:
             echo "AVISO: falta output_project/settings.gradle"
           fi
 
+
       - name: 6. Inspeccionar Proyecto
         shell: bash
         run: |
@@ -212,6 +215,7 @@ jobs:
             echo "No existe gradle.properties todavia."
           fi
 
+
       - name: 7. Instalar Gradle 8.11.1
         shell: bash
         run: |
@@ -245,6 +249,7 @@ jobs:
           echo "Gradle instalado:"
           gradle --version
 
+
       - name: 8. Configurar Gradle y Wrapper
         shell: bash
         run: |
@@ -259,17 +264,20 @@ jobs:
 
           cd output_project
 
-          cat > gradle.properties <<'PROPERTIES'
-org.gradle.jvmargs=-Xmx6g -XX:MaxMetaspaceSize=1g -Dfile.encoding=UTF-8
-org.gradle.workers.max=2
-org.gradle.parallel=false
-org.gradle.daemon=false
-android.useAndroidX=true
-android.enableJetifier=true
-PROPERTIES
+          echo ""
+          echo "Creando gradle.properties..."
+
+          printf '%s\n' \
+            'org.gradle.jvmargs=-Xmx6g -XX:MaxMetaspaceSize=1g -Dfile.encoding=UTF-8' \
+            'org.gradle.workers.max=2' \
+            'org.gradle.parallel=false' \
+            'org.gradle.daemon=false' \
+            'android.useAndroidX=true' \
+            'android.enableJetifier=true' \
+            > gradle.properties
 
           echo ""
-          echo "gradle.properties:"
+          echo "Contenido de gradle.properties:"
           cat gradle.properties
 
           echo ""
@@ -296,6 +304,7 @@ PROPERTIES
 
           ./gradlew --version
 
+
       - name: 9. Saneamiento del Codigo
         shell: bash
         run: |
@@ -310,6 +319,7 @@ PROPERTIES
           else
             echo "AVISO: scripts/post_process.py no existe."
           fi
+
 
       - name: 10. Recompilar APK
         shell: bash
@@ -361,6 +371,7 @@ PROPERTIES
 
           find . -type f -name "*.apk" -print
 
+
       - name: 11. Verificar APK
         shell: bash
         run: |
@@ -386,12 +397,14 @@ PROPERTIES
           echo "Tamano:"
           du -h "$APK_PATH"
 
+
       - name: 12. Subir APK Recompilado
         uses: actions/upload-artifact@v4
         with:
           name: rebuilt-apk
           path: output_project/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
+
 
       - name: 13. Sincronizar Codigo Fuente
         env:

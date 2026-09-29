@@ -110,6 +110,8 @@ jobs:
             exit 1
           fi
 
+          echo ""
+          echo "APK descargado:"
           ls -lh input_apk/app.target.apk
 
 
@@ -145,14 +147,14 @@ jobs:
 
           echo ""
           echo "=========================================="
-          echo "          RESULTADO JADX"
+          echo "          RESULTADO DE JADX"
           echo "=========================================="
 
           echo "Código de salida: $JADX_EXIT"
 
           if [ ! -d output_project ]; then
             echo "ERROR: No existe output_project."
-            exit "$JADX_EXIT"
+            exit 1
           fi
 
           FILE_COUNT=$(find output_project -type f | wc -l)
@@ -166,20 +168,28 @@ jobs:
 
           if [ "$JADX_EXIT" -ne 0 ]; then
             echo ""
-            echo "AVISO: JADX encontró errores."
-            echo "El proyecto generado será utilizado."
+            echo "AVISO: JADX terminó con errores."
+            echo "El proyecto generado será procesado igualmente."
           fi
 
           echo ""
-          echo "Archivos Gradle detectados:"
+          echo "Estructura principal:"
 
-          ls -lh output_project/build.gradle 2>/dev/null || true
-          ls -lh output_project/app/build.gradle 2>/dev/null || true
-          ls -lh output_project/settings.gradle 2>/dev/null || true
+          [ -f output_project/build.gradle ] \
+            && echo "OK: output_project/build.gradle" \
+            || echo "AVISO: falta output_project/build.gradle"
+
+          [ -f output_project/app/build.gradle ] \
+            && echo "OK: output_project/app/build.gradle" \
+            || echo "AVISO: falta output_project/app/build.gradle"
+
+          [ -f output_project/settings.gradle ] \
+            && echo "OK: output_project/settings.gradle" \
+            || echo "AVISO: falta output_project/settings.gradle"
 
 
       # ==================================================
-      # 6. INSPECCIONAR GRADLE
+      # 6. INSPECCIONAR PROYECTO
       # ==================================================
       - name: 6. Inspeccionar Proyecto Gradle
         shell: bash
@@ -228,7 +238,7 @@ jobs:
 
           echo ""
           echo "------------------------------------------"
-          echo "gradle.properties"
+          echo "gradle.properties EXISTENTE"
           echo "------------------------------------------"
 
           if [ -f output_project/gradle.properties ]; then
@@ -282,15 +292,15 @@ jobs:
 
 
       # ==================================================
-      # 8. GENERAR GRADLE WRAPPER
+      # 8. CONFIGURAR MEMORIA Y GENERAR WRAPPER
       # ==================================================
-      - name: 8. Generar Gradle Wrapper
+      - name: 8. Configurar Gradle y generar Wrapper
         shell: bash
         run: |
           set -e
 
           echo "=========================================="
-          echo "       GENERANDO GRADLE WRAPPER"
+          echo "    CONFIGURANDO MEMORIA DE GRADLE"
           echo "=========================================="
 
           export GRADLE_HOME="$HOME/gradle/gradle-8.11.1"
@@ -299,21 +309,32 @@ jobs:
           cd output_project
 
           echo ""
-          echo "Directorio:"
-          pwd
+          echo "Creando gradle.properties..."
+
+          cat > gradle.properties <<'PROPERTIES'
+org.gradle.jvmargs=-Xmx6g -XX:MaxMetaspaceSize=1g -Dfile.encoding=UTF-8
+org.gradle.workers.max=2
+org.gradle.parallel=false
+org.gradle.daemon=false
+android.useAndroidX=true
+android.enableJetifier=true
+PROPERTIES
 
           echo ""
-          echo "Ejecutando Gradle Wrapper..."
+          echo "Contenido de gradle.properties:"
+          cat gradle.properties
+
+          echo ""
+          echo "=========================================="
+          echo "       GENERANDO GRADLE WRAPPER"
+          echo "=========================================="
 
           gradle wrapper \
             --gradle-version 8.11.1 \
             --distribution-type bin
 
-          echo ""
-          echo "Verificando wrapper..."
-
           if [ ! -f gradlew ]; then
-            echo "ERROR: Gradle no pudo generar gradlew."
+            echo "ERROR: No se pudo generar gradlew."
             exit 1
           fi
 
@@ -329,6 +350,11 @@ jobs:
 
           find gradle -type f -print
 
+          echo ""
+          echo "Versión del wrapper:"
+
+          ./gradlew --version
+
 
       # ==================================================
       # 9. POST-PROCESAMIENTO
@@ -343,14 +369,18 @@ jobs:
           echo "=========================================="
 
           if [ -f scripts/post_process.py ]; then
+
             python3 scripts/post_process.py
+
           else
+
             echo "AVISO: scripts/post_process.py no existe."
+
           fi
 
 
       # ==================================================
-      # 10. COMPILAR APK
+      # 10. RECOMPILAR APK
       # ==================================================
       - name: 10. Recompilar APK
         shell: bash
@@ -361,9 +391,23 @@ jobs:
           echo "          RECOMPILANDO APK"
           echo "=========================================="
 
+          if [ ! -d output_project ]; then
+            echo "ERROR: No existe output_project."
+            exit 1
+          fi
+
           cd output_project
 
+          if [ ! -f gradlew ]; then
+            echo "ERROR: No existe gradlew."
+            exit 1
+          fi
+
           chmod +x gradlew
+
+          echo ""
+          echo "Memoria configurada:"
+          cat gradle.properties
 
           echo ""
           echo "Versión del Gradle Wrapper:"
@@ -371,9 +415,15 @@ jobs:
           ./gradlew --version
 
           echo ""
-          echo "Iniciando compilación..."
+          echo "=========================================="
+          echo "          INICIANDO COMPILACIÓN"
+          echo "=========================================="
 
-          ./gradlew assembleDebug --stacktrace
+          ./gradlew \
+            assembleDebug \
+            --no-daemon \
+            --max-workers=2 \
+            --stacktrace
 
           echo ""
           echo "=========================================="
@@ -381,7 +431,7 @@ jobs:
           echo "=========================================="
 
           echo ""
-          echo "APK encontrados:"
+          echo "APKs encontrados:"
 
           find . \
             -type f \
@@ -390,9 +440,38 @@ jobs:
 
 
       # ==================================================
-      # 11. SUBIR APK
+      # 11. VERIFICAR APK
       # ==================================================
-      - name: 11. Subir APK Recompilado
+      - name: 11. Verificar APK generado
+        shell: bash
+        run: |
+          set -e
+
+          echo "=========================================="
+          echo "        VERIFICANDO APK"
+          echo "=========================================="
+
+          APK_PATH="output_project/app/build/outputs/apk/debug/app-debug.apk"
+
+          if [ ! -f "$APK_PATH" ]; then
+            echo "ERROR: No se encontró el APK esperado:"
+            echo "$APK_PATH"
+            exit 1
+          fi
+
+          echo ""
+          echo "APK generado correctamente:"
+          ls -lh "$APK_PATH"
+
+          echo ""
+          echo "Tamaño:"
+          du -h "$APK_PATH"
+
+
+      # ==================================================
+      # 12. SUBIR APK COMO ARTIFACT
+      # ==================================================
+      - name: 12. Subir APK Recompilado
         uses: actions/upload-artifact@v4
         with:
           name: rebuilt-apk
@@ -401,9 +480,9 @@ jobs:
 
 
       # ==================================================
-      # 12. SINCRONIZAR CÓDIGO
+      # 13. SINCRONIZAR CÓDIGO FUENTE
       # ==================================================
-      - name: 12. Sincronizar Código Fuente
+      - name: 13. Sincronizar Código Fuente
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
@@ -426,20 +505,32 @@ jobs:
 
           git add output_project/
 
+          echo ""
+          echo "Estado de Git:"
+
           git status
 
           if git diff-index --quiet HEAD; then
 
+            echo ""
             echo "No hay cambios nuevos que commitear."
 
           else
 
+            echo ""
+            echo "Creando commit..."
+
             git commit \
               -m "feat: Update decompiled source code [Automated CI]"
+
+            echo ""
+            echo "Subiendo cambios..."
 
             git push origin HEAD:main
 
           fi
 
           echo ""
-          echo "Workflow terminado."
+          echo "=========================================="
+          echo "        WORKFLOW TERMINADO"
+          echo "=========================================="

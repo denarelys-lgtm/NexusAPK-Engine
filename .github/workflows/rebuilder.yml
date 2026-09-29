@@ -54,7 +54,7 @@ jobs:
             exit 1
           fi
 
-      - name: 5. Descomprimir el Código Fuente
+      - name: 5. Descomprimir e Inspeccionar Estructura
         shell: bash
         run: |
           set -e
@@ -64,26 +64,28 @@ jobs:
           echo "Descomprimiendo archivo..."
           unzip -q uploaded_source.zip -d source_extracted
           
-          echo "Contenido extraído:"
-          ls -la source_extracted/
+          echo "Estructura descomprimida:"
+          find source_extracted -maxdepth 3 -ls
 
-      - name: 6. Recompilar con Apktool
+      - name: 6. Recompilar con Apktool (Búsqueda Inteligente)
         shell: bash
         run: |
           set -e
           
-          PROJECT_DIR=$(find source_extracted -name "apktool.yml" -exec dirname {} \;)
+          # Buscar la ruta exacta donde se encuentra el apktool.yml
+          PROJECT_DIR=$(dirname "$(find source_extracted -name "apktool.yml" | head -n 1)")
           
-          if [ -z "$PROJECT_DIR" ]; then
+          if [ -z "$PROJECT_DIR" ] || [ "$PROJECT_DIR" = "." ]; then
             if [ -f "source_extracted/apktool.yml" ]; then
               PROJECT_DIR="source_extracted"
             else
-              echo "ERROR: No se encontró 'apktool.yml' dentro del ZIP."
+              echo "ERROR CRÍTICO: El archivo 'apktool.yml' no existe en ninguna parte del ZIP."
+              echo "Asegúrate de que el ZIP contenga un proyecto exportado legítimamente por apktool."
               exit 1
             fi
           fi
           
-          echo "Proyecto localizado en: $PROJECT_DIR"
+          echo "Proyecto localizado perfectamente en: $PROJECT_DIR"
           
           rm -f rebuilt-unsigned.apk
           java -jar apktool.jar b "$PROJECT_DIR" -o rebuilt-unsigned.apk

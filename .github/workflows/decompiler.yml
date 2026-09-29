@@ -16,6 +16,9 @@ jobs:
 
       - name: 1. Checkout del Repositorio
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: 2. Configurar Java 17
         uses: actions/setup-java@v4
@@ -229,27 +232,119 @@ jobs:
           echo "        RECOMPILANDO CON APKTOOL"
           echo "=========================================="
 
-          rm -f rebuilt.apk
+          rm -f rebuilt-unsigned.apk
 
           set +e
           java -jar apktool.jar b \
             output_apktool \
-            -o rebuilt.apk
+            -o rebuilt-unsigned.apk
           APKTOOL_B_EXIT=$?
           set -e
 
           echo "apktool build exit: $APKTOOL_B_EXIT"
 
-          if [ ! -f rebuilt.apk ]; then
-            echo "ERROR: rebuilt.apk no fue generado."
+          if [ ! -f rebuilt-unsigned.apk ]; then
+            echo "ERROR: rebuilt-unsigned.apk no fue generado."
             exit 1
           fi
 
           echo ""
-          echo "APK recompilado:"
-          ls -lh rebuilt.apk
+          echo "APK sin firmar generado:"
+          ls -lh rebuilt-unsigned.apk
 
-      - name: 10. Verificar APK
+      - name: 10. Zipalign del APK
+        shell: bash
+        run: |
+          set -e
+
+          echo "=========================================="
+          echo "              ZIPALIGN"
+          echo "=========================================="
+
+          # Localizar build-tools del Android SDK preinstalado en el runner
+          BT_DIR=$(find "$ANDROID_HOME/build-tools" -maxdepth 1 -type d | sort -V | tail -1)
+
+          if [ -z "$BT_DIR" ]; then
+            echo "No se encontro build-tools. Instalando..."
+            yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "build-tools;34.0.0" > /dev/null 2>&1 || true
+            BT_DIR=$(find "$ANDROID_HOME/build-tools" -maxdepth 1 -type d | sort -V | tail -1)
+          fi
+
+          echo "Build-tools encontrados en: $BT_DIR"
+          export PATH="$BT_DIR:$PATH"
+
+          echo "zipalign: $(command -v zipalign || echo 'no encontrado')"
+
+          if ! command -v zipalign &> /dev/null; then
+            echo "ERROR: zipalign no disponible."
+            exit 1
+          fi
+
+          rm -f rebuilt-aligned.apk
+
+          zipalign -p -f 4 rebuilt-unsigned.apk rebuilt-aligned.apk
+
+          echo ""
+          echo "APK alineado correctamente:"
+          ls -lh rebuilt-aligned.apk
+
+      - name: 11. Firmar APK (apksigner v1+v2+v3)
+        shell: bash
+        run: |
+          set -e
+
+          echo "=========================================="
+          echo "           FIRMANDO APK"
+          echo "=========================================="
+
+          BT_DIR=$(find "$ANDROID_HOME/build-tools" -maxdepth 1 -type d | sort -V | tail -1)
+          export PATH="$BT_DIR:$PATH"
+
+          echo "apksigner: $(command -v apksigner || echo 'no encontrado')"
+
+          if ! command -v apksigner &> /dev/null; then
+            echo "ERROR: apksigner no disponible."
+            exit 1
+          fi
+
+          KEYSTORE="debug.keystore"
+          if [ ! -f "$KEYSTORE" ]; then
+            echo "Generando keystore de debug..."
+            keytool -genkeypair \
+              -v \
+              -keystore "$KEYSTORE" \
+              -alias androiddebugkey \
+              -storepass android \
+              -keypass android \
+              -keyalg RSA \
+              -keysize 2048 \
+              -validity 10000 \
+              -dname "CN=Android Debug,O=Android,C=US"
+          fi
+
+          rm -f rebuilt.apk
+
+          apksigner sign \
+            --ks "$KEYSTORE" \
+            --ks-key-alias androiddebugkey \
+            --ks-pass pass:android \
+            --key-pass pass:android \
+            --v1-signing-enabled true \
+            --v2-signing-enabled true \
+            --v3-signing-enabled true \
+            --out rebuilt.apk \
+            rebuilt-aligned.apk
+
+          echo ""
+          echo "Verificando firma..."
+          apksigner verify --verbose rebuilt.apk
+
+          echo ""
+          echo "APK firmado:"
+          ls -lh rebuilt.apk
+          file rebuilt.apk
+
+      - name: 12. Verificar APK
         shell: bash
         run: |
           set -e
@@ -265,21 +360,21 @@ jobs:
           echo "Entradas del APK (primeras 20):"
           unzip -l rebuilt.apk | head -20
 
-      - name: 11. Subir APK Recompilado
+      - name: 13. Subir APK Recompilado
         uses: actions/upload-artifact@v4
         with:
           name: rebuilt-apk
           path: rebuilt.apk
           if-no-files-found: error
 
-      - name: 12. Subir Codigo Descompilado (JADX)
+      - name: 14. Subir Codigo Descompilado (JADX)
         uses: actions/upload-artifact@v4
         with:
           name: decompiled-source
           path: output_project/
           if-no-files-found: error
 
-      - name: 13. Sincronizar Codigo Fuente
+      - name: 15. Sincronizar Codigo Fuente (rama snapshot)
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
@@ -287,32 +382,48 @@ jobs:
           set -e
 
           echo "=========================================="
-          echo "        SINCRONIZANDO CODIGO"
+          echo "   SINCRONIZANDO CODIGO (SNAPSHOT)"
           echo "=========================================="
 
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
 
-          # -f fuerza el add aunque .gitignore excluya output_project/
-          git add -f output_project/
+          git add -f -q output_project/
 
-          echo ""
-          echo "Estado de git:"
-          git status
+          CHANGES=$(git diff --cached --numstat | wc -l)
+          echo "Archivos en stage: $CHANGES"
 
-          if git diff-index --quiet HEAD; then
+          if [ "$CHANGES" -eq 0 ]; then
             echo ""
-            echo "No hay cambios nuevos que commitear."
-          else
+            echo "No hay cambios nuevos que sincronizar."
             echo ""
-            echo "Creando commit..."
-            git commit -m "feat: Update decompiled source code [Automated CI]"
-
-            echo ""
-            echo "Haciendo push..."
-            git push origin HEAD:main
+            echo "=========================================="
+            echo "          WORKFLOW TERMINADO"
+            echo "=========================================="
+            exit 0
           fi
 
+          echo ""
+          echo "Guardando el nuevo volcado en un arbol temporal..."
+
+          TREE_HASH=$(git write-tree)
+          echo "Arbol: $TREE_HASH"
+
+          echo ""
+          echo "Creando commit huerfano (sin padre) para evitar acumulacion..."
+
+          COMMIT_HASH=$(git commit-tree "$TREE_HASH" \
+            -m "Decompiled source snapshot [skip ci]")
+
+          echo "Commit: $COMMIT_HASH"
+
+          echo ""
+          echo "Actualizando rama decompiled-source (force push)..."
+
+          git push origin "${COMMIT_HASH}:refs/heads/decompiled-source" --force
+
+          echo ""
+          echo "Rama decompiled-source actualizada con 1 solo commit."
           echo ""
           echo "=========================================="
           echo "          WORKFLOW TERMINADO"

@@ -239,9 +239,9 @@ jobs:
 
 
       # ==================================================
-      # 7. INSTALAR GRADLE
+      # 7. INSTALAR GRADLE 8.11.1
       # ==================================================
-      - name: 7. Instalar Gradle
+      - name: 7. Instalar Gradle 8.11.1
         shell: bash
         run: |
           set -e
@@ -250,7 +250,7 @@ jobs:
           echo "          INSTALANDO GRADLE"
           echo "=========================================="
 
-          GRADLE_VERSION="8.10.2"
+          GRADLE_VERSION="8.11.1"
 
           echo "Versión seleccionada: $GRADLE_VERSION"
 
@@ -293,7 +293,7 @@ jobs:
           echo "       GENERANDO GRADLE WRAPPER"
           echo "=========================================="
 
-          export GRADLE_HOME="$HOME/gradle/gradle-8.10.2"
+          export GRADLE_HOME="$HOME/gradle/gradle-8.11.1"
           export PATH="$GRADLE_HOME/bin:$PATH"
 
           cd output_project
@@ -306,7 +306,7 @@ jobs:
           echo "Ejecutando Gradle Wrapper..."
 
           gradle wrapper \
-            --gradle-version 8.10.2 \
+            --gradle-version 8.11.1 \
             --distribution-type bin
 
           echo ""
@@ -343,13 +343,9 @@ jobs:
           echo "=========================================="
 
           if [ -f scripts/post_process.py ]; then
-
             python3 scripts/post_process.py
-
           else
-
             echo "AVISO: scripts/post_process.py no existe."
-
           fi
 
 

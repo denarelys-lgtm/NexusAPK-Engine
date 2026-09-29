@@ -24,7 +24,7 @@ jobs:
       # ==================================================
       # 2. JAVA 17
       # ==================================================
-      - name: 2. Configurar Entorno Java (JDK 17)
+      - name: 2. Configurar Entorno Java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -34,7 +34,7 @@ jobs:
       # ==================================================
       # 3. INSTALAR JADX
       # ==================================================
-      - name: 3. Instalar JADX CLI Moderno
+      - name: 3. Instalar JADX
         shell: bash
         run: |
           set -e
@@ -50,29 +50,21 @@ jobs:
             | cut -d '"' -f 4)
 
           if [ -z "$JADX_TAG" ]; then
-            echo "ERROR: No se pudo detectar la versión de JADX."
+            echo "ERROR: No se pudo detectar JADX."
             exit 1
           fi
 
           JADX_VERSION="${JADX_TAG#v}"
 
-          echo "Tag detectado: $JADX_TAG"
+          echo "Tag: $JADX_TAG"
           echo "Versión: $JADX_VERSION"
 
           JADX_URL="https://github.com/skylot/jadx/releases/download/${JADX_TAG}/jadx-${JADX_VERSION}.zip"
-
-          echo ""
-          echo "Descargando JADX..."
 
           wget \
             --show-progress \
             -O "jadx-${JADX_VERSION}.zip" \
             "$JADX_URL"
-
-          if [ ! -s "jadx-${JADX_VERSION}.zip" ]; then
-            echo "ERROR: JADX no fue descargado correctamente."
-            exit 1
-          fi
 
           rm -rf jadx-tool
 
@@ -87,17 +79,15 @@ jobs:
           echo "$GITHUB_WORKSPACE/jadx-tool/bin" >> "$GITHUB_PATH"
 
           echo ""
-          echo "JADX instalado en:"
+          echo "JADX instalado:"
           command -v jadx
-
-          echo ""
           jadx --version
 
 
       # ==================================================
       # 4. DESCARGAR APK
       # ==================================================
-      - name: 4. Descargar APK desde GitHub Releases
+      - name: 4. Descargar APK
         shell: bash
         run: |
           set -e
@@ -107,7 +97,6 @@ jobs:
           echo "=========================================="
 
           mkdir -p input_apk
-          mkdir -p output_project
 
           APK_URL="https://github.com/denarelys-lgtm/NexusAPK-Engine/releases/download/Apk/tu_app.apk"
 
@@ -121,15 +110,13 @@ jobs:
             exit 1
           fi
 
-          echo ""
-          echo "APK descargado:"
           ls -lh input_apk/app.target.apk
 
 
       # ==================================================
       # 5. DESCOMPILAR APK
       # ==================================================
-      - name: 5. Descompilar APK a Proyecto Gradle Java
+      - name: 5. Descompilar APK
         shell: bash
         run: |
           set -e
@@ -140,22 +127,7 @@ jobs:
 
           export PATH="$GITHUB_WORKSPACE/jadx-tool/bin:$PATH"
 
-          TARGET_APK="input_apk/app.target.apk"
-
-          echo ""
-          echo "JADX:"
-          command -v jadx
-          jadx --version
-
-          echo ""
-          echo "APK:"
-          ls -lh "$TARGET_APK"
-
           rm -rf output_project
-
-          echo ""
-          echo "Iniciando JADX..."
-          echo ""
 
           set +e
 
@@ -165,22 +137,22 @@ jobs:
             --deobf \
             --show-bad-code \
             --threads-count 4 \
-            "$TARGET_APK"
+            input_apk/app.target.apk
 
-          JADX_EXIT_CODE=$?
+          JADX_EXIT=$?
 
           set -e
 
           echo ""
           echo "=========================================="
-          echo "          RESULTADO DE JADX"
+          echo "          RESULTADO JADX"
           echo "=========================================="
 
-          echo "Código de salida: $JADX_EXIT_CODE"
+          echo "Código de salida: $JADX_EXIT"
 
-          if [ ! -d "output_project" ]; then
-            echo "ERROR: No se creó output_project."
-            exit "$JADX_EXIT_CODE"
+          if [ ! -d output_project ]; then
+            echo "ERROR: No existe output_project."
+            exit "$JADX_EXIT"
           fi
 
           FILE_COUNT=$(find output_project -type f | wc -l)
@@ -192,43 +164,24 @@ jobs:
             exit 1
           fi
 
-          if [ "$JADX_EXIT_CODE" -ne 0 ]; then
+          if [ "$JADX_EXIT" -ne 0 ]; then
             echo ""
-            echo "AVISO: JADX terminó con errores."
-            echo "El proyecto generado será procesado igualmente."
-          else
-            echo ""
-            echo "JADX terminó correctamente."
+            echo "AVISO: JADX encontró errores."
+            echo "El proyecto generado será utilizado."
           fi
 
           echo ""
-          echo "Estructura principal:"
+          echo "Archivos Gradle detectados:"
 
-          if [ -f output_project/build.gradle ]; then
-            echo "OK: output_project/build.gradle"
-          else
-            echo "AVISO: falta output_project/build.gradle"
-          fi
-
-          if [ -f output_project/app/build.gradle ]; then
-            echo "OK: output_project/app/build.gradle"
-          else
-            echo "AVISO: falta output_project/app/build.gradle"
-          fi
-
-          if [ -f output_project/settings.gradle ]; then
-            echo "OK: output_project/settings.gradle"
-          fi
-
-          if [ -f output_project/settings.gradle.kts ]; then
-            echo "OK: output_project/settings.gradle.kts"
-          fi
+          ls -lh output_project/build.gradle 2>/dev/null || true
+          ls -lh output_project/app/build.gradle 2>/dev/null || true
+          ls -lh output_project/settings.gradle 2>/dev/null || true
 
 
       # ==================================================
-      # 6. INSPECCIONAR PROYECTO GRADLE
+      # 6. INSPECCIONAR GRADLE
       # ==================================================
-      - name: 6. Inspeccionar Proyecto Gradle Generado
+      - name: 6. Inspeccionar Proyecto Gradle
         shell: bash
         run: |
           set -e
@@ -238,94 +191,172 @@ jobs:
           echo "=========================================="
 
           echo ""
-          echo "Archivos principales:"
-
-          find output_project \
-            -maxdepth 2 \
-            -type f \
-            -print \
-            | sort \
-            | sed -n '1,200p'
-
-          echo ""
-          echo "=========================================="
-          echo "          build.gradle PRINCIPAL"
-          echo "=========================================="
-
-          if [ -f output_project/build.gradle ]; then
-            sed -n '1,240p' output_project/build.gradle
-          fi
-
-          echo ""
-          echo "=========================================="
-          echo "          app/build.gradle"
-          echo "=========================================="
-
-          if [ -f output_project/app/build.gradle ]; then
-            sed -n '1,300p' output_project/app/build.gradle
-          fi
-
-          echo ""
-          echo "=========================================="
-          echo "          settings.gradle"
-          echo "=========================================="
+          echo "------------------------------------------"
+          echo "settings.gradle"
+          echo "------------------------------------------"
 
           if [ -f output_project/settings.gradle ]; then
-            sed -n '1,200p' output_project/settings.gradle
+            cat output_project/settings.gradle
+          else
+            echo "No existe settings.gradle"
           fi
+
 
           echo ""
-          echo "=========================================="
-          echo "       GRADLE WRAPPER"
-          echo "=========================================="
+          echo "------------------------------------------"
+          echo "build.gradle PRINCIPAL"
+          echo "------------------------------------------"
 
-          if [ -f output_project/gradlew ]; then
-            echo "gradlew: EXISTE"
-            ls -lh output_project/gradlew
+          if [ -f output_project/build.gradle ]; then
+            cat output_project/build.gradle
           else
-            echo "gradlew: NO EXISTE"
+            echo "No existe build.gradle"
           fi
 
-          if [ -f output_project/gradle/wrapper/gradle-wrapper.properties ]; then
-            echo ""
-            echo "gradle-wrapper.properties:"
-            cat output_project/gradle/wrapper/gradle-wrapper.properties
+
+          echo ""
+          echo "------------------------------------------"
+          echo "app/build.gradle"
+          echo "------------------------------------------"
+
+          if [ -f output_project/app/build.gradle ]; then
+            cat output_project/app/build.gradle
+          else
+            echo "No existe app/build.gradle"
+          fi
+
+
+          echo ""
+          echo "------------------------------------------"
+          echo "gradle.properties"
+          echo "------------------------------------------"
+
+          if [ -f output_project/gradle.properties ]; then
+            cat output_project/gradle.properties
+          else
+            echo "No existe gradle.properties"
           fi
 
 
       # ==================================================
-      # 7. SANEAMIENTO DEL CÓDIGO
+      # 7. INSTALAR GRADLE
       # ==================================================
-      - name: 7. Saneamiento Inteligente del Código
+      - name: 7. Instalar Gradle
         shell: bash
         run: |
           set -e
 
           echo "=========================================="
-          echo "          POST-PROCESAMIENTO"
+          echo "          INSTALANDO GRADLE"
           echo "=========================================="
 
-          if [ -f "scripts/post_process.py" ]; then
+          GRADLE_VERSION="8.10.2"
 
-            echo "Ejecutando scripts/post_process.py..."
+          echo "Versión seleccionada: $GRADLE_VERSION"
+
+          wget \
+            --show-progress \
+            -O gradle.zip \
+            "https://services.gradle.org/distributions/gradle-${GRADLE_VERSION}-bin.zip"
+
+          rm -rf "$HOME/gradle"
+
+          mkdir -p "$HOME/gradle"
+
+          unzip -q \
+            gradle.zip \
+            -d "$HOME/gradle"
+
+          export GRADLE_HOME="$HOME/gradle/gradle-${GRADLE_VERSION}"
+
+          export PATH="$GRADLE_HOME/bin:$PATH"
+
+          echo "$GRADLE_HOME/bin" >> "$GITHUB_PATH"
+
+          echo ""
+          echo "Gradle instalado en:"
+          echo "$GRADLE_HOME"
+
+          echo ""
+          gradle --version
+
+
+      # ==================================================
+      # 8. GENERAR GRADLE WRAPPER
+      # ==================================================
+      - name: 8. Generar Gradle Wrapper
+        shell: bash
+        run: |
+          set -e
+
+          echo "=========================================="
+          echo "       GENERANDO GRADLE WRAPPER"
+          echo "=========================================="
+
+          export GRADLE_HOME="$HOME/gradle/gradle-8.10.2"
+          export PATH="$GRADLE_HOME/bin:$PATH"
+
+          cd output_project
+
+          echo ""
+          echo "Directorio:"
+          pwd
+
+          echo ""
+          echo "Ejecutando Gradle Wrapper..."
+
+          gradle wrapper \
+            --gradle-version 8.10.2 \
+            --distribution-type bin
+
+          echo ""
+          echo "Verificando wrapper..."
+
+          if [ ! -f gradlew ]; then
+            echo "ERROR: Gradle no pudo generar gradlew."
+            exit 1
+          fi
+
+          chmod +x gradlew
+
+          echo ""
+          echo "Wrapper generado correctamente."
+
+          ls -lh gradlew
+
+          echo ""
+          echo "Archivos del wrapper:"
+
+          find gradle -type f -print
+
+
+      # ==================================================
+      # 9. POST-PROCESAMIENTO
+      # ==================================================
+      - name: 9. Saneamiento del Código
+        shell: bash
+        run: |
+          set -e
+
+          echo "=========================================="
+          echo "        POST-PROCESAMIENTO"
+          echo "=========================================="
+
+          if [ -f scripts/post_process.py ]; then
 
             python3 scripts/post_process.py
-
-            echo ""
-            echo "Post-procesamiento terminado."
 
           else
 
             echo "AVISO: scripts/post_process.py no existe."
-            echo "Se continúa sin post-procesamiento."
 
           fi
 
 
       # ==================================================
-      # 8. RECOMPILAR APK
+      # 10. COMPILAR APK
       # ==================================================
-      - name: 8. Recompilar el Proyecto a un Nuevo APK con Gradle
+      - name: 10. Recompilar APK
         shell: bash
         run: |
           set -e
@@ -334,63 +365,27 @@ jobs:
           echo "          RECOMPILANDO APK"
           echo "=========================================="
 
-          if [ ! -d "output_project" ]; then
-            echo "ERROR: No existe output_project."
-            exit 1
-          fi
-
           cd output_project
-
-          echo ""
-          echo "Directorio actual:"
-          pwd
-
-          echo ""
-          echo "Contenido:"
-          ls -la
-
-          echo ""
-
-          if [ ! -f "gradlew" ]; then
-
-            echo "=========================================="
-            echo "     GRADLE WRAPPER NO ENCONTRADO"
-            echo "=========================================="
-
-            echo ""
-            echo "JADX generó el proyecto, pero no existe:"
-            echo "gradlew"
-
-            echo ""
-            echo "No se ejecutará Gradle todavía."
-
-            echo ""
-            echo "La inspección anterior mostrará qué"
-            echo "estructura Gradle generó JADX."
-
-            exit 1
-          fi
 
           chmod +x gradlew
 
           echo ""
-          echo "Gradle Wrapper encontrado."
-
-          echo ""
-          echo "Versión de Gradle:"
+          echo "Versión del Gradle Wrapper:"
 
           ./gradlew --version
 
           echo ""
-          echo "Compilando..."
+          echo "Iniciando compilación..."
 
           ./gradlew assembleDebug --stacktrace
 
           echo ""
-          echo "Compilación terminada."
+          echo "=========================================="
+          echo "       COMPILACIÓN TERMINADA"
+          echo "=========================================="
 
           echo ""
-          echo "APKs encontrados:"
+          echo "APK encontrados:"
 
           find . \
             -type f \
@@ -399,9 +394,9 @@ jobs:
 
 
       # ==================================================
-      # 9. SUBIR APK
+      # 11. SUBIR APK
       # ==================================================
-      - name: 9. Subir el APK Recompilado como Artifact
+      - name: 11. Subir APK Recompilado
         uses: actions/upload-artifact@v4
         with:
           name: rebuilt-apk
@@ -410,9 +405,9 @@ jobs:
 
 
       # ==================================================
-      # 10. SINCRONIZAR CÓDIGO
+      # 12. SINCRONIZAR CÓDIGO
       # ==================================================
-      - name: 10. Sincronizar Código Fuente al Repositorio
+      - name: 12. Sincronizar Código Fuente
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
@@ -435,25 +430,16 @@ jobs:
 
           git add output_project/
 
-          echo ""
-          echo "Estado de Git:"
           git status
 
           if git diff-index --quiet HEAD; then
 
-            echo ""
             echo "No hay cambios nuevos que commitear."
 
           else
 
-            echo ""
-            echo "Creando commit..."
-
             git commit \
               -m "feat: Update decompiled source code [Automated CI]"
-
-            echo ""
-            echo "Enviando cambios a main..."
 
             git push origin HEAD:main
 

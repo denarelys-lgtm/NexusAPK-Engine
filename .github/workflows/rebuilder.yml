@@ -3,187 +3,73 @@ name: Tango Creative v2 - Gradle Build
 on:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     steps:
+      - uses: actions/checkout@v4
 
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Setup Java 17
-        uses: actions/setup-java@v4
+      - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
 
-      - name: 3. Instalar JADX
-        shell: bash
+      - name: Ensure Android SDK env
         run: |
-          set -e
-
-          echo "=========================================="
-          echo "          INSTALACION DE JADX"
-          echo "=========================================="
-
-          API_URL="https://api.github.com/repos/skylot/jadx/releases/latest"
-
-          JADX_TAG=$(curl -fsSL \
-            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
-            -H "Accept: application/vnd.github+json" \
-            "$API_URL" \
-            | python3 -c "import sys, json; print(json.load(sys.stdin)['tag_name'])")
-
-          if [ -z "$JADX_TAG" ]; then
-            echo "ERROR: No se pudo detectar la version de JADX."
-            exit 1
-          fi
-
-          JADX_VERSION="${JADX_TAG#v}"
-          JADX_URL="https://github.com/skylot/jadx/releases/download/${JADX_TAG}/jadx-${JADX_VERSION}.zip"
-
-          echo "Tag detectado: $JADX_TAG"
-          echo "Version: $JADX_VERSION"
-          echo "URL: $JADX_URL"
-
-          wget --show-progress -O "jadx-${JADX_VERSION}.zip" "$JADX_URL"
-
-          rm -rf jadx-tool
-          unzip -q "jadx-${JADX_VERSION}.zip" -d jadx-tool
-          chmod +x jadx-tool/bin/jadx
-
-          echo "$GITHUB_WORKSPACE/jadx-tool/bin" >> "$GITHUB_PATH"
-          export PATH="$GITHUB_WORKSPACE/jadx-tool/bin:$PATH"
-
-          echo ""
-          echo "JADX instalado:"
-          command -v jadx
-          jadx --version
+          echo "ANDROID_HOME=${ANDROID_HOME:-/usr/local/lib/android/sdk}" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}" >> "$GITHUB_ENV"
 
       - name: Download rebuild1.zip
         run: |
           set -e
-
-          wget \
-            --show-progress \
-            --fail \
-            --retry-connrefused \
-            --tries=3 \
+          wget --show-progress --fail --tries=3 --waitretry=5 \
             -O source.zip \
             "https://github.com/denarelys-lgtm/NexusAPK-Engine/releases/download/build1/rebuild1.zip"
-
           test -s source.zip
-
           ls -lh source.zip
 
-      - name: Extract ZIP
+      - name: Extract
         run: |
-          set -e
-
-          rm -rf source
-          mkdir -p source
-
+          rm -rf source && mkdir -p source
           unzip -q source.zip -d source
-
-          echo "=== ESTRUCTURA ==="
           find source -maxdepth 4 -type f | sort | head -300
 
       - name: Detect Gradle project
-        shell: bash
         run: |
-          set -e
-
-          SETTINGS=$(find source \
-            -type f \
-            \( -name "settings.gradle" -o -name "settings.gradle.kts" \) \
-            | head -n 1)
-
-          if [ -z "$SETTINGS" ]; then
-            echo "ERROR: No se encontró settings.gradle."
-            exit 1
-          fi
-
+          SETTINGS=$(find source -type f \( -name "settings.gradle" -o -name "settings.gradle.kts" \) | head -n1)
+          [ -n "$SETTINGS" ] || { echo "No settings.gradle"; exit 1; }
           PROJECT_DIR=$(dirname "$SETTINGS")
-
-          echo "Proyecto encontrado:"
-          echo "$PROJECT_DIR"
-
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
 
-      - name: Validate Android project
-        run: |
-          set -e
-
-          test -f "$PROJECT_DIR/app/build.gradle" \
-            || test -f "$PROJECT_DIR/app/build.gradle.kts"
-
-          test -f "$PROJECT_DIR/app/src/main/AndroidManifest.xml"
-
-          echo "Proyecto Android encontrado correctamente."
-
-      - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@v4
+      - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: "8.13"
 
-      - name: Show Gradle version
-        run: gradle --version
-
-      - name: Inspect project
+      - name: Build Debug
         run: |
-          echo "=== PROJECT ==="
-          find "$PROJECT_DIR" -maxdepth 3 -type f | sort | head -300
-
-          echo
-          echo "=== APP BUILD.GRADLE ==="
-
-          cat "$PROJECT_DIR/app/build.gradle" || true
-
-      - name: Build Debug APK
-        shell: bash
-        run: |
-          set -e
-
           cd "$PROJECT_DIR"
-
-          gradle \
-            --no-daemon \
-            --stacktrace \
-            --warning-mode all \
-            :app:assembleDebug
-
-      - name: Locate APK
-        run: |
-          set -e
-
-          find "$PROJECT_DIR/app/build/outputs" \
-            -type f \
-            -name "*.apk" \
-            -print
+          if [ -x ./gradlew ]; then GRADLE=./gradlew; else GRADLE=gradle; fi
+          $GRADLE --no-daemon --stacktrace :app:assembleDebug
 
       - name: Prepare APK
-        shell: bash
         run: |
-          set -e
-
-          APK=$(find "$PROJECT_DIR/app/build/outputs/apk" \
-            -type f \
-            -name "*.apk" \
-            | head -n 1)
-
-          if [ -z "$APK" ]; then
-            echo "ERROR: No se generó ningún APK."
-            exit 1
-          fi
-
+          APK=$(find "$PROJECT_DIR/app/build/outputs/apk" -type f -name "*.apk" | head -n1)
+          [ -n "$APK" ] || { echo "No APK"; exit 1; }
           cp "$APK" tango-creative-live-debug.apk
-
           ls -lh tango-creative-live-debug.apk
 
-      - name: Upload APK
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: tango-creative-live-v2-debug
           path: tango-creative-live-debug.apk
           if-no-files-found: error
+          retention-days: 7

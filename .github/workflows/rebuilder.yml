@@ -84,7 +84,9 @@ jobs:
 
           sdkmanager \
             "platform-tools" \
+            "platforms;android-34" \
             "platforms;android-35" \
+            "build-tools;34.0.0" \
             "build-tools;35.0.0"
 
           echo
@@ -293,7 +295,7 @@ jobs:
           fi
 
           echo "Antes del parche:"
-          find "$RES_DIR" -type f -name "abc_*.9.png" | sort
+          find "$RES_DIR" -type f -name "abc_*.9.png" | sort || true
           echo
 
           COUNT=0
@@ -302,7 +304,7 @@ jobs:
             NEW_FILE="${FILE%.9.png}.png"
 
             if [ -e "$NEW_FILE" ]; then
-              NEW_FILE="${FILE%.9.png}_9patch.png"
+              NEW_FILE="${FILE%.9}_9patch.png"
             fi
 
             mv "$FILE" "$NEW_FILE"
@@ -316,12 +318,95 @@ jobs:
 
           echo
           echo "Después del parche:"
-          find "$RES_DIR" -type f -name "abc_*.png" | sort | head -50
+          find "$RES_DIR" -type f -name "abc_*.png" | sort | head -50 || true
 
           echo
           echo "=========================================="
           echo "PARCHE COMPLETADO"
           echo "=========================================="
+
+
+      # ==================================================
+      # 10.6. DIAGNOSTICAR SECUENCIAS ]]> EN XML
+      # ==================================================
+
+      - name: Diagnose ]]> occurrences
+        continue-on-error: true
+        shell: bash
+        run: |
+          RES_DIR="$PROJECT_DIR/app/src/main/res"
+
+          echo "=========================================="
+          echo "ARCHIVOS XML CON SECUENCIA ]]>"
+          echo "=========================================="
+
+          grep -rn ']]>' "$RES_DIR" \
+            --include="*.xml" \
+            | head -50 || echo "No se encontraron ocurrencias."
+
+
+      # ==================================================
+      # 10.7. PARCHEAR SECUENCIAS ]]> EN XML
+      # ==================================================
+
+      - name: Fix unescaped ]]> in XML
+        shell: bash
+        run: |
+          set -e
+
+          echo "=========================================="
+          echo "CORRIGIENDO SECUENCIAS ]]> SIN ESCAPAR"
+          echo "=========================================="
+
+          RES_DIR="$PROJECT_DIR/app/src/main/res"
+
+          if [ ! -d "$RES_DIR" ]; then
+            echo "No hay res/, saltando."
+            exit 0
+          fi
+
+          COUNT=0
+
+          while IFS= read -r -d '' FILE; do
+            if grep -q ']]>' "$FILE"; then
+              echo
+              echo "→ Corrigiendo: $FILE"
+              grep -n ']]>' "$FILE" | head -10
+
+              # Reemplazar ]]> por ]]&gt;
+              # Esto es válido en XML fuera de CDATA.
+              sed -i 's/]]>/]]\&gt;/g' "$FILE"
+
+              echo "  → Reemplazado."
+              COUNT=$((COUNT + 1))
+            fi
+          done < <(find "$RES_DIR" -type f -name "*.xml" -print0)
+
+          echo
+          echo "Total archivos corregidos: $COUNT"
+
+          echo
+          echo "=========================================="
+          echo "PARCHE COMPLETADO"
+          echo "=========================================="
+
+
+      # ==================================================
+      # 10.8. LIMPIAR INTERMEDIOS RESIDUALES
+      # ==================================================
+
+      - name: Clean stale intermediates
+        shell: bash
+        run: |
+          set -e
+
+          cd "$PROJECT_DIR"
+
+          rm -rf app/build/intermediates/incremental \
+                 app/build/intermediates/merged_res \
+                 app/build/intermediates/merged_res_blame_folder
+
+          echo "Intermedios limpiados."
 
 
       # ==================================================
@@ -485,7 +570,7 @@ jobs:
           find "$PROJECT_DIR/app/build/outputs" \
             -type f \
             -name "*.apk" \
-            -print
+            -print || true
 
 
       # ==================================================

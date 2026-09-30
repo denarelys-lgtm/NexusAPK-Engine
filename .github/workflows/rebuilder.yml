@@ -275,16 +275,16 @@ jobs:
 
 
       # ==================================================
-      # 10.5. PARCHEAR RECURSOS 9-PATCH DE APPCOMPAT
+      # 10.5. PARCHEAR TODOS LOS RECURSOS 9-PATCH
       # ==================================================
 
-      - name: Patch AppCompat 9-patch resources
+      - name: Patch all 9-patch resources
         shell: bash
         run: |
           set -e
 
           echo "=========================================="
-          echo "PARCHEANDO 9-PATCH DE APPCOMPAT"
+          echo "RENOMBRANDO TODOS LOS .9.png"
           echo "=========================================="
 
           RES_DIR="$PROJECT_DIR/app/src/main/res"
@@ -294,8 +294,8 @@ jobs:
             exit 0
           fi
 
-          echo "Antes del parche:"
-          find "$RES_DIR" -type f -name "abc_*.9.png" | sort || true
+          echo "Archivos .9.png ANTES del parche:"
+          find "$RES_DIR" -type f -name "*.9.png" | sort || true
           echo
 
           COUNT=0
@@ -311,14 +311,14 @@ jobs:
             echo "→ $FILE"
             echo "  => $NEW_FILE"
             COUNT=$((COUNT + 1))
-          done < <(find "$RES_DIR" -type f -name "abc_*.9.png" -print0)
+          done < <(find "$RES_DIR" -type f -name "*.9.png" -print0)
 
           echo
-          echo "Total renombrados: $COUNT"
+          echo "Total de archivos renombrados: $COUNT"
 
           echo
-          echo "Después del parche:"
-          find "$RES_DIR" -type f -name "abc_*.png" | sort | head -50 || true
+          echo "Archivos .9.png DESPUÉS del parche (debería estar vacío):"
+          find "$RES_DIR" -type f -name "*.9.png" | sort || true
 
           echo
           echo "=========================================="
@@ -373,8 +373,6 @@ jobs:
               echo "→ Corrigiendo: $FILE"
               grep -n ']]>' "$FILE" | head -10
 
-              # Reemplazar ]]> por ]]&gt;
-              # Esto es válido en XML fuera de CDATA.
               sed -i 's/]]>/]]\&gt;/g' "$FILE"
 
               echo "  → Reemplazado."

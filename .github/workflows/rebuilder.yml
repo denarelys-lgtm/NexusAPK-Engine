@@ -43,9 +43,6 @@ jobs:
       - name: Setup Android SDK
         uses: android-actions/setup-android@v4
         with:
-          # No instalar paquetes adicionales aquí.
-          # Evita cualquier intento de instalar el paquete
-          # antiguo "tools".
           packages: ''
 
       - name: Configure Android SDK environment
@@ -78,7 +75,7 @@ jobs:
           echo "ACEPTANDO LICENCIAS ANDROID"
           echo "=========================================="
 
-          yes | sdkmanager --licenses > /dev/null || true
+          yes | sdkmanager --licenses > /dev/null 2>&1 || true
 
           echo
           echo "=========================================="
@@ -276,6 +273,99 @@ jobs:
 
 
       # ==================================================
+      # 10.5. PARCHEAR RECURSOS 9-PATCH CORRUPTOS
+      # ==================================================
+
+      - name: Patch corrupted 9-patch resources
+        shell: bash
+        run: |
+          set -e
+
+          echo "=========================================="
+          echo "PARCHEANDO RECURSOS 9-PATCH CORRUPTOS"
+          echo "=========================================="
+
+          RES_DIR="$PROJECT_DIR/app/src/main/res"
+
+          if [ ! -d "$RES_DIR" ]; then
+            echo "No se encontró directorio res/, saltando parche."
+            exit 0
+          fi
+
+          # Buscar todos los .9.png dentro de res/
+          mapfile -t NINE_PATCHES < <(find "$RES_DIR" -type f -name "*.9.png")
+
+          if [ "${#NINE_PATCHES[@]}" -eq 0 ]; then
+            echo "No se encontraron archivos .9.png, saltando parche."
+            exit 0
+          fi
+
+          echo "Se encontraron ${#NINE_PATCHES[@]} archivos .9.png"
+          echo
+
+          for FILE in "${NINE_PATCHES[@]}"; do
+            echo "→ Procesando: $FILE"
+
+            # Verificar si el PNG es válido según file(1)
+            FILE_TYPE=$(file -b "$FILE" || echo "unknown")
+            echo "  Tipo detectado: $FILE_TYPE"
+
+            # Verificar integridad con python (PIL no, pero sí struct básico)
+            if python3 - "$FILE" <<'PY'
+          import sys, struct, zlib
+
+          path = sys.argv[1]
+          try:
+              with open(path, 'rb') as f:
+                  sig = f.read(8)
+                  if sig != b'\x89PNG\r\n\x1a\n':
+                      sys.exit(1)
+                  # Leer chunks y validar CRC
+                  while True:
+                      length_bytes = f.read(4)
+                      if len(length_bytes) < 4:
+                          break
+                      length = struct.unpack('>I', length_bytes)[0]
+                      chunk_type = f.read(4)
+                      data = f.read(length)
+                      crc = f.read(4)
+                      if len(crc) < 4:
+                          sys.exit(1)
+                      expected = struct.unpack('>I', crc)[0]
+                      actual = zlib.crc32(chunk_type + data) & 0xffffffff
+                      if expected != actual:
+                          sys.exit(1)
+                      if chunk_type == b'IEND':
+                          break
+              sys.exit(0)
+          except Exception:
+              sys.exit(1)
+          PY
+            then
+              echo "  ✓ PNG válido, conservando como 9-patch."
+            else
+              echo "  ✗ PNG corrupto, renombrando a .png normal."
+
+              NEW_FILE="${FILE%.9.png}.png"
+
+              # Evitar sobreescribir si ya existe
+              if [ -e "$NEW_FILE" ]; then
+                NEW_FILE="${FILE%.9.png}_patched.png"
+              fi
+
+              mv "$FILE" "$NEW_FILE"
+              echo "  → Renombrado a: $NEW_FILE"
+            fi
+
+            echo
+          done
+
+          echo "=========================================="
+          echo "PARCHE COMPLETADO"
+          echo "=========================================="
+
+
+      # ==================================================
       # 11. GRADLE
       # ==================================================
 
@@ -297,21 +387,18 @@ jobs:
           echo "=========================================="
           echo "JAVA"
           echo "=========================================="
-
           java -version
 
           echo
           echo "=========================================="
           echo "GRADLE"
           echo "=========================================="
-
           gradle --version
 
           echo
           echo "=========================================="
           echo "ANDROID"
           echo "=========================================="
-
           echo "ANDROID_HOME=$ANDROID_HOME"
           echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
 
@@ -319,14 +406,12 @@ jobs:
           echo "=========================================="
           echo "SDKMANAGER"
           echo "=========================================="
-
           sdkmanager --version
 
           echo
           echo "=========================================="
           echo "ANDROID SDK PACKAGES"
           echo "=========================================="
-
           sdkmanager --list_installed | head -200
 
 
@@ -373,36 +458,27 @@ jobs:
 
 
       # ==================================================
-      # 14. DEPENDENCIAS
+      # 14. DEPENDENCIAS (informativo, no bloqueante)
       # ==================================================
 
       - name: Inspect Gradle dependencies
+        continue-on-error: true
         shell: bash
         run: |
-          set +e
-
           cd "$PROJECT_DIR"
 
-          if [ -x ./gradlew ]; then
-            ./gradlew \
-              --no-daemon \
-              --stacktrace \
-              :app:dependencies
+          if [ -f ./gradlew ]; then
+            chmod +x ./gradlew
+            GRADLE="./gradlew"
           else
-            gradle \
-              --no-daemon \
-              --stacktrace \
-              :app:dependencies
+            GRADLE="gradle"
           fi
 
-          STATUS=$?
-
-          echo
-          echo "Dependency inspection exit code: $STATUS"
-
-          # Esta etapa es informativa y no debe detener
-          # la compilación principal.
-          exit 0
+          "$GRADLE" \
+            --no-daemon \
+            --stacktrace \
+            :app:dependencies \
+            --configuration debugRuntimeClasspath | head -200
 
 
       # ==================================================
@@ -420,7 +496,8 @@ jobs:
           echo "INICIANDO COMPILACIÓN"
           echo "=========================================="
 
-          if [ -x ./gradlew ]; then
+          if [ -f ./gradlew ]; then
+            chmod +x ./gradlew
             GRADLE="./gradlew"
           else
             GRADLE="gradle"
@@ -429,7 +506,6 @@ jobs:
           "$GRADLE" \
             --no-daemon \
             --stacktrace \
-            --info \
             --warning-mode all \
             :app:assembleDebug
 

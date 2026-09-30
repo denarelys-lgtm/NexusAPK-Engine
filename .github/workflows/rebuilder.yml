@@ -1,4 +1,3 @@
-```yaml
 name: Tango Creative v2 - Gradle Build
 
 on:
@@ -494,4 +493,3 @@ jobs:
           path: tango-creative-live-debug.apk
           if-no-files-found: error
           retention-days: 7
-```

@@ -18,9 +18,6 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
-
       - name: 3. Instalar JADX
         shell: bash
         run: |

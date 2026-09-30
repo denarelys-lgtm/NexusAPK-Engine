@@ -1,4 +1,4 @@
-name: Tango Creative v2 - Gradle Build
+name: Tango Creative v2.1 - Gradle Build
 
 on:
   workflow_dispatch:
@@ -43,13 +43,11 @@ jobs:
       - name: Setup Android SDK
         uses: android-actions/setup-android@v4
         with:
-          # Importante:
-          # No pedir "tools" ni otros paquetes antiguos.
           packages: ''
 
 
       # ==================================================
-      # 4. CONFIGURAR ANDROID SDK
+      # 4. ANDROID SDK ENVIRONMENT
       # ==================================================
 
       - name: Configure Android SDK environment
@@ -71,7 +69,7 @@ jobs:
 
 
       # ==================================================
-      # 5. INSTALAR ANDROID API 36
+      # 5. ANDROID API 36
       # ==================================================
 
       - name: Install Android SDK API 36
@@ -80,14 +78,14 @@ jobs:
           set -e
 
           echo "=========================================="
-          echo "ACEPTANDO LICENCIAS ANDROID"
+          echo "ANDROID LICENSES"
           echo "=========================================="
 
           yes | sdkmanager --licenses > /dev/null || true
 
           echo
           echo "=========================================="
-          echo "INSTALANDO ANDROID API 36"
+          echo "ANDROID SDK API 36"
           echo "=========================================="
 
           sdkmanager \
@@ -96,15 +94,11 @@ jobs:
             "build-tools;36.0.0"
 
           echo
-          echo "=========================================="
-          echo "ANDROID SDK INSTALADO"
-          echo "=========================================="
-
-          sdkmanager --list_installed | head -200
+          echo "SDK instalado correctamente."
 
 
       # ==================================================
-      # 6. DESCARGAR EL ZIP REAL
+      # 6. DESCARGAR PROYECTO
       # ==================================================
 
       - name: Download rebuild1.zip
@@ -118,9 +112,6 @@ jobs:
           echo "DESCARGANDO PROYECTO"
           echo "=========================================="
 
-          echo "$URL"
-          echo
-
           curl \
             --fail \
             --location \
@@ -132,13 +123,8 @@ jobs:
             --output source.zip \
             "$URL"
 
-          if [ ! -s source.zip ]; then
-            echo "ERROR: source.zip está vacío."
-            exit 1
-          fi
+          test -s source.zip
 
-          echo
-          echo "ZIP descargado correctamente:"
           ls -lh source.zip
 
 
@@ -151,18 +137,11 @@ jobs:
         run: |
           set -e
 
-          echo "=========================================="
-          echo "VERIFICANDO ZIP"
-          echo "=========================================="
-
           unzip -t source.zip
-
-          echo
-          echo "ZIP válido."
 
 
       # ==================================================
-      # 8. EXTRAER ZIP
+      # 8. EXTRAER
       # ==================================================
 
       - name: Extract source ZIP
@@ -176,26 +155,24 @@ jobs:
           unzip -q source.zip -d source
 
           echo "=========================================="
-          echo "ESTRUCTURA DEL PROYECTO"
+          echo "ESTRUCTURA"
           echo "=========================================="
 
           find source \
-            -maxdepth 4 \
+            -maxdepth 5 \
             -type f \
             | sort \
-            | head -500
+            | head -800
 
 
       # ==================================================
-      # 9. DETECTAR PROYECTO GRADLE
+      # 9. DETECTAR GRADLE
       # ==================================================
 
       - name: Detect Gradle project
         shell: bash
         run: |
           set -e
-
-          echo "Buscando settings.gradle..."
 
           SETTINGS=$(find source \
             -type f \
@@ -207,33 +184,21 @@ jobs:
             | head -n 1)
 
           if [ -z "$SETTINGS" ]; then
-            echo
             echo "ERROR: No se encontró settings.gradle."
-            echo
-
-            find source \
-              -maxdepth 6 \
-              -type f \
-              | sort \
-              | head -1000
-
             exit 1
           fi
 
           PROJECT_DIR=$(dirname "$SETTINGS")
 
-          echo
-          echo "=========================================="
-          echo "PROYECTO ENCONTRADO"
-          echo "=========================================="
-
-          echo "$PROJECT_DIR"
-
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+
+          echo
+          echo "Proyecto:"
+          echo "$PROJECT_DIR"
 
 
       # ==================================================
-      # 10. VALIDAR PROYECTO ANDROID
+      # 10. VALIDAR APP
       # ==================================================
 
       - name: Validate Android project
@@ -241,93 +206,28 @@ jobs:
         run: |
           set -e
 
-          echo "=========================================="
-          echo "VALIDANDO PROYECTO ANDROID"
-          echo "=========================================="
-
-          echo "Proyecto:"
-          echo "$PROJECT_DIR"
-
           if [ -f "$PROJECT_DIR/app/build.gradle" ]; then
-            echo "Encontrado: app/build.gradle"
+            echo "Encontrado app/build.gradle"
 
           elif [ -f "$PROJECT_DIR/app/build.gradle.kts" ]; then
-            echo "Encontrado: app/build.gradle.kts"
+            echo "Encontrado app/build.gradle.kts"
 
           else
-            echo
-            echo "ERROR: No se encontró app/build.gradle."
+            echo "ERROR: No se encontró configuración Gradle de app."
+            exit 1
+          fi
 
-            find "$PROJECT_DIR" \
-              -maxdepth 5 \
-              -type f \
-              | sort \
-              | head -1000
-
+          if [ ! -f "$PROJECT_DIR/app/src/main/AndroidManifest.xml" ]; then
+            echo "ERROR: AndroidManifest.xml no encontrado."
             exit 1
           fi
 
 
       # ==================================================
-      # 11. MANIFEST
+      # 11. NORMALIZAR values-iw
       # ==================================================
 
-      - name: Validate AndroidManifest
-        shell: bash
-        run: |
-          set -e
-
-          MANIFEST="$PROJECT_DIR/app/src/main/AndroidManifest.xml"
-
-          if [ ! -f "$MANIFEST" ]; then
-            echo "ERROR: No se encontró:"
-            echo "$MANIFEST"
-            exit 1
-          fi
-
-          echo "AndroidManifest encontrado."
-
-
-      # ==================================================
-      # 12. MOSTRAR compileSdk / targetSdk
-      # ==================================================
-
-      - name: Inspect Android SDK configuration
-        shell: bash
-        run: |
-          set -e
-
-          echo "=========================================="
-          echo "CONFIGURACIÓN ANDROID"
-          echo "=========================================="
-
-          if [ -f "$PROJECT_DIR/app/build.gradle" ]; then
-            grep -nEi \
-              "compileSdk|targetSdk|minSdk|buildToolsVersion" \
-              "$PROJECT_DIR/app/build.gradle" \
-              || true
-
-          elif [ -f "$PROJECT_DIR/app/build.gradle.kts" ]; then
-            grep -nEi \
-              "compileSdk|targetSdk|minSdk|buildToolsVersion" \
-              "$PROJECT_DIR/app/build.gradle.kts" \
-              || true
-          fi
-
-          echo
-          echo "SDK instalado:"
-
-          sdkmanager --list_installed \
-            | grep -E \
-              "platforms;android-36|build-tools;36.0.0|platform-tools" \
-            || true
-
-
-      # ==================================================
-      # 13. CORREGIR values-iw -> values-he
-      # ==================================================
-
-      - name: Normalize legacy Hebrew values-iw resources
+      - name: Normalize Hebrew resource directory
         shell: bash
         run: |
           set -e
@@ -336,137 +236,58 @@ jobs:
           echo "NORMALIZANDO values-iw"
           echo "=========================================="
 
-          FOUND=0
-
           while IFS= read -r DIR; do
-            FOUND=1
+
+            PARENT="$(dirname "$DIR")"
+            TARGET="$PARENT/values-he"
 
             echo
             echo "Encontrado:"
             echo "$DIR"
 
-            PARENT="$(dirname "$DIR")"
-            TARGET="$PARENT/values-he"
-
             if [ -d "$TARGET" ]; then
-              echo "Ya existe:"
-              echo "$TARGET"
-
-              echo "No se sobrescribirá."
-
-              echo
-              echo "Contenido de values-iw:"
-              find "$DIR" \
-                -maxdepth 1 \
-                -type f \
-                -print \
-                | sort
-
+              echo "values-he ya existe."
+              echo "No se modifica."
             else
-              echo "Migrando:"
+              echo "Moviendo:"
               echo "$DIR"
               echo "->"
               echo "$TARGET"
 
               mv "$DIR" "$TARGET"
-
-              echo "Migración completada."
             fi
 
           done < <(
-            find "$PROJECT_DIR" \
+            find "$PROJECT_DIR/app/src" \
               -type d \
               -name "values-iw" \
               -print
           )
 
-          if [ "$FOUND" -eq 0 ]; then
-            echo "No existe values-iw."
-          fi
-
 
       # ==================================================
-      # 14. DETECTOR AUTOMÁTICO DE ]]> EN XML
+      # 12. INSTALAR HERRAMIENTAS XML
       # ==================================================
 
-      - name: Detect invalid XML CDATA sequence
+      - name: Install XML diagnostics tools
         shell: bash
         run: |
           set -e
 
-          echo "=========================================="
-          echo "DETECTANDO SECUENCIA ]]> EN XML"
-          echo "=========================================="
-
-          REPORT="$GITHUB_WORKSPACE/xml-cdata-report.txt"
-
-          : > "$REPORT"
-
-          FOUND=0
-
-          while IFS= read -r FILE; do
-
-            if grep -nF "]]>" "$FILE" > /tmp/xml-match.txt; then
-              FOUND=1
-
-              echo "------------------------------------------" | tee -a "$REPORT"
-              echo "ARCHIVO: $FILE" | tee -a "$REPORT"
-              echo "------------------------------------------" | tee -a "$REPORT"
-
-              cat /tmp/xml-match.txt | tee -a "$REPORT"
-
-              echo | tee -a "$REPORT"
-            fi
-
-          done < <(
-            find "$PROJECT_DIR/app/src" \
-              -type f \
-              -name "*.xml" \
-              -print
-          )
-
-          echo
-          echo "=========================================="
-
-          if [ "$FOUND" -eq 1 ]; then
-            echo "SE ENCONTRARON SECUENCIAS ]]>."
-            echo
-            echo "Reporte:"
-            cat "$REPORT"
-          else
-            echo "No se encontró ]]> en los XML de app/src."
-          fi
-
-          echo "=========================================="
-
-          # Este paso es diagnóstico.
-          # No detenemos todavía la compilación porque ]]>
-          # puede aparecer legítimamente como cierre de CDATA.
-          exit 0
+          sudo apt-get update
+          sudo apt-get install -y libxml2-utils
 
 
       # ==================================================
-      # 15. VALIDAR XML CON xmllint
+      # 13. VALIDAR TODOS LOS XML DE APP
       # ==================================================
 
-      - name: Validate XML resources
+      - name: Validate source XML
         shell: bash
         run: |
           set +e
 
-          echo "=========================================="
-          echo "VALIDANDO XML"
-          echo "=========================================="
-
-          if ! command -v xmllint >/dev/null 2>&1; then
-            echo "xmllint no está disponible."
-            echo "Instalando libxml2-utils..."
-
-            sudo apt-get update
-            sudo apt-get install -y libxml2-utils
-          fi
-
-          REPORT="$GITHUB_WORKSPACE/xml-validation-report.txt"
+          REPORT="$GITHUB_WORKSPACE/source-xml-validation.txt"
 
           : > "$REPORT"
 
@@ -475,16 +296,60 @@ jobs:
           while IFS= read -r FILE; do
 
             if ! xmllint --noout "$FILE" >> "$REPORT" 2>&1; then
+
               INVALID=1
 
               echo
               echo "=========================================="
-              echo "XML INVÁLIDO"
+              echo "XML INVALIDO"
               echo "=========================================="
 
               echo "$FILE"
 
-              cat "$REPORT" | tail -30
+              tail -30 "$REPORT"
+            fi
+
+          done < <(
+            find "$PROJECT_DIR/app/src" \
+              -type f \
+              -name "*.xml" \
+              -print
+          )
+
+          if [ "$INVALID" -eq 0 ]; then
+            echo "Todos los XML de app/src son válidos."
+          else
+            echo
+            echo "Se encontraron XML inválidos."
+            cat "$REPORT"
+          fi
+
+          # Diagnóstico solamente.
+          exit 0
+
+
+      # ==================================================
+      # 14. BUSCAR ]]> EN SOURCE
+      # ==================================================
+
+      - name: Scan source XML for CDATA terminators
+        shell: bash
+        run: |
+          set +e
+
+          REPORT="$GITHUB_WORKSPACE/source-cdata-report.txt"
+
+          : > "$REPORT"
+
+          FOUND=0
+
+          while IFS= read -r FILE; do
+
+            if grep -nF "]]>" "$FILE" >> "$REPORT"; then
+              FOUND=1
+
+              echo "Archivo con ]]>:"
+              echo "$FILE"
             fi
 
           done < <(
@@ -497,96 +362,18 @@ jobs:
           echo
           echo "=========================================="
 
-          if [ "$INVALID" -eq 1 ]; then
-            echo "SE ENCONTRARON XML INVÁLIDOS."
-            echo
-            echo "Reporte completo:"
-            cat "$REPORT"
-
-            echo
-            echo "No se modifica automáticamente el XML."
-            echo "Esto evita destruir recursos válidos."
+          if [ "$FOUND" -eq 0 ]; then
+            echo "No se encontró ]]>."
           else
-            echo "Todos los XML de app/src son válidos."
+            echo "Se encontró ]]>."
+            cat "$REPORT"
           fi
 
-          echo "=========================================="
-
-          # Diagnóstico únicamente.
           exit 0
 
 
       # ==================================================
-      # 16. INSPECCIONAR values-iw / values-he
-      # ==================================================
-
-      - name: Inspect Hebrew plural resources
-        shell: bash
-        run: |
-          set -e
-
-          echo "=========================================="
-          echo "INSPECCIÓN DE RECURSOS HEBREOS"
-          echo "=========================================="
-
-          find "$PROJECT_DIR/app/src" \
-            -type d \
-            \( \
-              -name "values-iw" \
-              -o \
-              -name "values-he" \
-            \) \
-            -print
-
-          echo
-          echo "Archivos XML relacionados con plurals:"
-
-          find "$PROJECT_DIR/app/src" \
-            -type f \
-            -name "*.xml" \
-            \( \
-              -path "*/values-iw/*" \
-              -o \
-              -path "*/values-he/*" \
-            \) \
-            -print \
-            | sort
-
-          echo
-          echo "Contenido de archivos plurals encontrados:"
-
-          find "$PROJECT_DIR/app/src" \
-            -type f \
-            -name "*.xml" \
-            \( \
-              -path "*/values-iw/*" \
-              -o \
-              -path "*/values-he/*" \
-            \) \
-            -print \
-            | while read -r FILE; do
-
-              if grep -qiE \
-                "<plurals|<item" \
-                "$FILE"; then
-
-                echo
-                echo "------------------------------------------"
-                echo "$FILE"
-                echo "------------------------------------------"
-
-                grep -nEi \
-                  "<plurals|<item" \
-                  "$FILE" \
-                  | head -200 \
-                  || true
-              fi
-
-            done
-
-
-      # ==================================================
-      # 17. GRADLE
+      # 15. GRADLE
       # ==================================================
 
       - name: Setup Gradle
@@ -596,10 +383,10 @@ jobs:
 
 
       # ==================================================
-      # 18. INFORMACIÓN DEL ENTORNO
+      # 16. ENTORNO
       # ==================================================
 
-      - name: Show build environment
+      - name: Show environment
         shell: bash
         run: |
           set -e
@@ -619,29 +406,24 @@ jobs:
 
           echo
           echo "=========================================="
-          echo "ANDROID"
+          echo "ANDROID SDK"
           echo "=========================================="
 
           echo "ANDROID_HOME=$ANDROID_HOME"
           echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
 
           echo
-          echo "=========================================="
-          echo "SDKMANAGER"
-          echo "=========================================="
-
           sdkmanager --version
 
           echo
-          echo "=========================================="
-          echo "SDK INSTALADO"
-          echo "=========================================="
-
-          sdkmanager --list_installed | head -250
+          sdkmanager --list_installed \
+            | grep -E \
+              "platforms;android-36|build-tools;36.0.0|platform-tools" \
+            || true
 
 
       # ==================================================
-      # 19. INSPECCIONAR GRADLE
+      # 17. INSPECCIONAR CONFIGURACIÓN
       # ==================================================
 
       - name: Inspect Gradle configuration
@@ -655,7 +437,6 @@ jobs:
 
           if [ -f "$PROJECT_DIR/settings.gradle" ]; then
             cat "$PROJECT_DIR/settings.gradle"
-
           elif [ -f "$PROJECT_DIR/settings.gradle.kts" ]; then
             cat "$PROJECT_DIR/settings.gradle.kts"
           fi
@@ -667,7 +448,6 @@ jobs:
 
           if [ -f "$PROJECT_DIR/build.gradle" ]; then
             cat "$PROJECT_DIR/build.gradle"
-
           elif [ -f "$PROJECT_DIR/build.gradle.kts" ]; then
             cat "$PROJECT_DIR/build.gradle.kts"
           fi
@@ -679,14 +459,13 @@ jobs:
 
           if [ -f "$PROJECT_DIR/app/build.gradle" ]; then
             cat "$PROJECT_DIR/app/build.gradle"
-
           elif [ -f "$PROJECT_DIR/app/build.gradle.kts" ]; then
             cat "$PROJECT_DIR/app/build.gradle.kts"
           fi
 
 
       # ==================================================
-      # 20. INSPECCIONAR DEPENDENCIAS
+      # 18. DEPENDENCIAS
       # ==================================================
 
       - name: Inspect Gradle dependencies
@@ -697,72 +476,294 @@ jobs:
           cd "$PROJECT_DIR"
 
           if [ -x ./gradlew ]; then
-
             ./gradlew \
               --no-daemon \
               --stacktrace \
               :app:dependencies
-
-            STATUS=$?
-
           else
-
             gradle \
               --no-daemon \
               --stacktrace \
               :app:dependencies
-
-            STATUS=$?
-
           fi
+
+          STATUS=$?
 
           echo
           echo "Dependency inspection exit code: $STATUS"
 
-          # Es una inspección.
-          # No bloquea la compilación.
           exit 0
 
 
       # ==================================================
-      # 21. PRE-BUILD RESOURCE CHECK
+      # 19. EJECUTAR SOLO MERGE DEBUG RESOURCES
       # ==================================================
 
-      - name: Pre-build resource diagnostics
+      - name: Diagnose mergeDebugResources
+        id: diagnose_resources
+        shell: bash
+        continue-on-error: true
+        run: |
+          set -o pipefail
+
+          cd "$PROJECT_DIR"
+
+          echo "=========================================="
+          echo "DIAGNÓSTICO mergeDebugResources"
+          echo "=========================================="
+
+          if [ -x ./gradlew ]; then
+            GRADLE="./gradlew"
+          else
+            GRADLE="gradle"
+          fi
+
+          "$GRADLE" \
+            --no-daemon \
+            --stacktrace \
+            --info \
+            --warning-mode all \
+            :app:mergeDebugResources \
+            2>&1 | tee "$GITHUB_WORKSPACE/mergeDebugResources.log"
+
+          STATUS=${PIPESTATUS[0]}
+
+          echo
+          echo "mergeDebugResources exit code: $STATUS"
+
+          exit "$STATUS"
+
+
+      # ==================================================
+      # 20. CAPTURAR RECURSOS INTERMEDIOS
+      # ==================================================
+
+      - name: Capture AAPT2 intermediate resources
+        if: always()
         shell: bash
         run: |
-          set -e
+          set +e
 
           echo "=========================================="
-          echo "PRE-BUILD RESOURCE CHECK"
+          echo "CAPTURANDO RECURSOS INTERMEDIOS"
           echo "=========================================="
 
-          echo
-          echo "Cantidad de XML en app/src:"
-          find "$PROJECT_DIR/app/src" \
-            -type f \
-            -name "*.xml" \
-            | wc -l
+          mkdir -p "$GITHUB_WORKSPACE/aapt2-diagnostics"
+
+          BUILD_DIR="$PROJECT_DIR/app/build"
+
+          echo "Build directory:"
+          echo "$BUILD_DIR"
+
+          if [ -d "$BUILD_DIR" ]; then
+
+            echo
+            echo "Directorios relevantes:"
+
+            find "$BUILD_DIR" \
+              -type d \
+              \( \
+                -name "res" \
+                -o \
+                -name "merged_res" \
+                -o \
+                -name "incremental" \
+                -o \
+                -name "generated" \
+                -o \
+                -name "packaged_res" \
+              \) \
+              -print \
+              | head -300
+
+            echo
+            echo "Buscando archivos XML generados..."
+
+            find "$BUILD_DIR" \
+              -type f \
+              -name "*.xml" \
+              -print \
+              > "$GITHUB_WORKSPACE/aapt2-diagnostics/xml-files.txt"
+
+            echo
+            echo "Cantidad de XML generados:"
+            wc -l \
+              "$GITHUB_WORKSPACE/aapt2-diagnostics/xml-files.txt"
+
+          else
+            echo "No existe app/build."
+          fi
+
+
+      # ==================================================
+      # 21. BUSCAR ]]> EN RECURSOS GENERADOS
+      # ==================================================
+
+      - name: Scan generated resources for CDATA problems
+        if: always()
+        shell: bash
+        run: |
+          set +e
+
+          REPORT="$GITHUB_WORKSPACE/aapt2-diagnostics/generated-cdata-report.txt"
+
+          : > "$REPORT"
+
+          echo "==========================================" | tee -a "$REPORT"
+          echo "BUSCANDO ]]> EN RECURSOS GENERADOS" | tee -a "$REPORT"
+          echo "==========================================" | tee -a "$REPORT"
+
+          if [ -d "$PROJECT_DIR/app/build" ]; then
+
+            grep -RniF \
+              --include="*.xml" \
+              "]]>" \
+              "$PROJECT_DIR/app/build" \
+              >> "$REPORT" \
+              2>/dev/null
+
+            STATUS=$?
+
+            if [ "$STATUS" -ne 0 ]; then
+              echo "No se encontró ]]> en recursos generados." \
+                | tee -a "$REPORT"
+            fi
+
+          else
+            echo "No existe app/build." | tee -a "$REPORT"
+          fi
 
           echo
-          echo "Archivos values:"
-          find "$PROJECT_DIR/app/src" \
-            -type d \
-            -name "values*" \
-            | sort
+          cat "$REPORT"
+
+
+      # ==================================================
+      # 22. BUSCAR PLURALS EN RECURSOS GENERADOS
+      # ==================================================
+
+      - name: Inspect generated plural resources
+        if: always()
+        shell: bash
+        run: |
+          set +e
+
+          REPORT="$GITHUB_WORKSPACE/aapt2-diagnostics/generated-plurals-report.txt"
+
+          : > "$REPORT"
+
+          echo "==========================================" \
+            | tee -a "$REPORT"
+
+          echo "PLURALS GENERADOS" \
+            | tee -a "$REPORT"
+
+          echo "==========================================" \
+            | tee -a "$REPORT"
+
+          if [ -d "$PROJECT_DIR/app/build" ]; then
+
+            while IFS= read -r FILE; do
+
+              if grep -qi "<plurals" "$FILE"; then
+
+                echo
+                echo "------------------------------------------" \
+                  | tee -a "$REPORT"
+
+                echo "$FILE" \
+                  | tee -a "$REPORT"
+
+                echo "------------------------------------------" \
+                  | tee -a "$REPORT"
+
+                grep -nEi \
+                  "<plurals|<item" \
+                  "$FILE" \
+                  | head -200 \
+                  | tee -a "$REPORT"
+
+              fi
+
+            done < <(
+              find "$PROJECT_DIR/app/build" \
+                -type f \
+                -name "*.xml" \
+                -print
+            )
+
+          fi
 
           echo
-          echo "Archivos plurals:"
-          find "$PROJECT_DIR/app/src" \
-            -type f \
-            -name "*.xml" \
-            -exec grep -l "<plurals" {} \; \
-            | sort \
+          echo "Reporte:"
+          cat "$REPORT"
+
+
+      # ==================================================
+      # 23. MOSTRAR ERROR REAL DE MERGE
+      # ==================================================
+
+      - name: Extract mergeDebugResources failure
+        if: always()
+        shell: bash
+        run: |
+          set +e
+
+          LOG="$GITHUB_WORKSPACE/mergeDebugResources.log"
+
+          echo "=========================================="
+          echo "ERROR PRINCIPAL DE AAPT2"
+          echo "=========================================="
+
+          if [ ! -f "$LOG" ]; then
+            echo "No existe mergeDebugResources.log."
+            exit 0
+          fi
+
+          grep -nEi \
+            "What went wrong|Execution failed|AAPT|error:|Caused by:|parsePlural|resource .* not found|failed" \
+            "$LOG" \
+            | tail -150 \
             || true
 
 
       # ==================================================
-      # 22. COMPILAR APK
+      # 24. GUARDAR DIAGNÓSTICOS
+      # ==================================================
+
+      - name: Upload AAPT2 diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tango-creative-v2-aapt2-diagnostics
+          path: |
+            mergeDebugResources.log
+            source-xml-validation.txt
+            source-cdata-report.txt
+            aapt2-diagnostics/
+          if-no-files-found: ignore
+          retention-days: 7
+
+
+      # ==================================================
+      # 25. FALLAR SI MERGE FALLÓ
+      # ==================================================
+
+      - name: Stop if mergeDebugResources failed
+        if: steps.diagnose_resources.outcome == 'failure'
+        shell: bash
+        run: |
+          echo "=========================================="
+          echo "mergeDebugResources FALLÓ"
+          echo "=========================================="
+
+          echo
+          echo "Los diagnósticos AAPT2 fueron guardados como artifact."
+
+          exit 1
+
+
+      # ==================================================
+      # 26. COMPILAR APK
       # ==================================================
 
       - name: Build Debug APK
@@ -773,7 +774,7 @@ jobs:
           cd "$PROJECT_DIR"
 
           echo "=========================================="
-          echo "INICIANDO COMPILACIÓN"
+          echo "INICIANDO COMPILACIÓN APK"
           echo "=========================================="
 
           if [ -x ./gradlew ]; then
@@ -781,9 +782,6 @@ jobs:
           else
             GRADLE="gradle"
           fi
-
-          echo "Gradle: $GRADLE"
-          echo "Proyecto: $PROJECT_DIR"
 
           "$GRADLE" \
             --no-daemon \
@@ -794,7 +792,7 @@ jobs:
 
 
       # ==================================================
-      # 23. LOCALIZAR APK
+      # 27. LOCALIZAR APK
       # ==================================================
 
       - name: Locate generated APK
@@ -813,7 +811,7 @@ jobs:
 
 
       # ==================================================
-      # 24. PREPARAR APK
+      # 28. PREPARAR APK
       # ==================================================
 
       - name: Prepare APK artifact
@@ -836,13 +834,11 @@ jobs:
 
           cp "$APK" tango-creative-live-debug.apk
 
-          echo
-          echo "APK preparado:"
           ls -lh tango-creative-live-debug.apk
 
 
       # ==================================================
-      # 25. GUARDAR APK
+      # 29. SUBIR APK
       # ==================================================
 
       - name: Upload APK artifact
@@ -851,20 +847,4 @@ jobs:
           name: tango-creative-live-v2-debug
           path: tango-creative-live-debug.apk
           if-no-files-found: error
-          retention-days: 7
-
-
-      # ==================================================
-      # 26. GUARDAR REPORTES DE DIAGNÓSTICO
-      # ==================================================
-
-      - name: Upload XML diagnostics
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: tango-creative-v2-xml-diagnostics
-          path: |
-            xml-cdata-report.txt
-            xml-validation-report.txt
-          if-no-files-found: ignore
           retention-days: 7

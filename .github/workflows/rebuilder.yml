@@ -273,16 +273,16 @@ jobs:
 
 
       # ==================================================
-      # 10.5. PARCHEAR RECURSOS 9-PATCH CORRUPTOS
+      # 10.5. PARCHEAR RECURSOS 9-PATCH DE APPCOMPAT
       # ==================================================
 
-      - name: Patch corrupted 9-patch resources
+      - name: Patch AppCompat 9-patch resources
         shell: bash
         run: |
           set -e
 
           echo "=========================================="
-          echo "PARCHEANDO RECURSOS 9-PATCH CORRUPTOS"
+          echo "PARCHEANDO 9-PATCH DE APPCOMPAT"
           echo "=========================================="
 
           RES_DIR="$PROJECT_DIR/app/src/main/res"
@@ -292,74 +292,33 @@ jobs:
             exit 0
           fi
 
-          # Buscar todos los .9.png dentro de res/
-          mapfile -t NINE_PATCHES < <(find "$RES_DIR" -type f -name "*.9.png")
-
-          if [ "${#NINE_PATCHES[@]}" -eq 0 ]; then
-            echo "No se encontraron archivos .9.png, saltando parche."
-            exit 0
-          fi
-
-          echo "Se encontraron ${#NINE_PATCHES[@]} archivos .9.png"
+          echo "Antes del parche:"
+          find "$RES_DIR" -type f -name "abc_*.9.png" | sort
           echo
 
-          for FILE in "${NINE_PATCHES[@]}"; do
-            echo "→ Procesando: $FILE"
+          COUNT=0
 
-            # Verificar si el PNG es válido según file(1)
-            FILE_TYPE=$(file -b "$FILE" || echo "unknown")
-            echo "  Tipo detectado: $FILE_TYPE"
+          while IFS= read -r -d '' FILE; do
+            NEW_FILE="${FILE%.9.png}.png"
 
-            # Verificar integridad con python (PIL no, pero sí struct básico)
-            if python3 - "$FILE" <<'PY'
-          import sys, struct, zlib
-
-          path = sys.argv[1]
-          try:
-              with open(path, 'rb') as f:
-                  sig = f.read(8)
-                  if sig != b'\x89PNG\r\n\x1a\n':
-                      sys.exit(1)
-                  # Leer chunks y validar CRC
-                  while True:
-                      length_bytes = f.read(4)
-                      if len(length_bytes) < 4:
-                          break
-                      length = struct.unpack('>I', length_bytes)[0]
-                      chunk_type = f.read(4)
-                      data = f.read(length)
-                      crc = f.read(4)
-                      if len(crc) < 4:
-                          sys.exit(1)
-                      expected = struct.unpack('>I', crc)[0]
-                      actual = zlib.crc32(chunk_type + data) & 0xffffffff
-                      if expected != actual:
-                          sys.exit(1)
-                      if chunk_type == b'IEND':
-                          break
-              sys.exit(0)
-          except Exception:
-              sys.exit(1)
-          PY
-            then
-              echo "  ✓ PNG válido, conservando como 9-patch."
-            else
-              echo "  ✗ PNG corrupto, renombrando a .png normal."
-
-              NEW_FILE="${FILE%.9.png}.png"
-
-              # Evitar sobreescribir si ya existe
-              if [ -e "$NEW_FILE" ]; then
-                NEW_FILE="${FILE%.9.png}_patched.png"
-              fi
-
-              mv "$FILE" "$NEW_FILE"
-              echo "  → Renombrado a: $NEW_FILE"
+            if [ -e "$NEW_FILE" ]; then
+              NEW_FILE="${FILE%.9.png}_9patch.png"
             fi
 
-            echo
-          done
+            mv "$FILE" "$NEW_FILE"
+            echo "→ $FILE"
+            echo "  => $NEW_FILE"
+            COUNT=$((COUNT + 1))
+          done < <(find "$RES_DIR" -type f -name "abc_*.9.png" -print0)
 
+          echo
+          echo "Total renombrados: $COUNT"
+
+          echo
+          echo "Después del parche:"
+          find "$RES_DIR" -type f -name "abc_*.png" | sort | head -50
+
+          echo
           echo "=========================================="
           echo "PARCHE COMPLETADO"
           echo "=========================================="

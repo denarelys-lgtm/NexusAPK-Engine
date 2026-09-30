@@ -13,128 +13,477 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
 
     steps:
+
+      # ==================================================
+      # 1. CHECKOUT
+      # ==================================================
+
       - name: Checkout repository
         uses: actions/checkout@v4
+
+
+      # ==================================================
+      # 2. JAVA 17
+      # ==================================================
 
       - name: Setup Java 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
+          cache: gradle
 
-      - name: Ensure Android SDK env
+
+      # ==================================================
+      # 3. ANDROID SDK
+      # ==================================================
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+
+      - name: Configure Android SDK environment
+        shell: bash
         run: |
+          set -e
+
           echo "ANDROID_HOME=${ANDROID_HOME:-/usr/local/lib/android/sdk}" >> "$GITHUB_ENV"
           echo "ANDROID_SDK_ROOT=${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}" >> "$GITHUB_ENV"
 
-      - name: Download rebuild1.zip
+          echo "ANDROID_HOME=${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          echo "ANDROID_SDK_ROOT=${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}"
+
+
+      # ==================================================
+      # 4. INSTALAR SDK / BUILD TOOLS
+      # ==================================================
+
+      - name: Install Android SDK packages
+        shell: bash
         run: |
           set -e
-          curl -fL --retry 3 --retry-delay 5 --connect-timeout 20 \
-            -o source.zip \
-            "https://github.com/denarelys-lgtm/NexusAPK-Engine/releases/download/build1/rebuild1.zip"
-          test -s source.zip
+
+          yes | sdkmanager --licenses > /dev/null || true
+
+          sdkmanager \
+            "platform-tools" \
+            "platforms;android-35" \
+            "build-tools;35.0.0"
+
+          echo
+          echo "Android SDK instalado correctamente."
+
+          sdkmanager --list_installed | head -100
+
+
+      # ==================================================
+      # 5. DESCARGAR ZIP
+      # ==================================================
+
+      - name: Download rebuild1.zip
+        shell: bash
+        run: |
+          set -e
+
+          URL="https://github.com/denarelys-lgtm/NexusAPK-Engine/releases/download/build1/rebuild1.zip"
+
+          echo "=========================================="
+          echo "DESCARGANDO PROYECTO"
+          echo "=========================================="
+          echo "$URL"
+          echo
+
+          curl \
+            --fail \
+            --location \
+            --show-error \
+            --retry 3 \
+            --retry-delay 5 \
+            --connect-timeout 30 \
+            --max-time 900 \
+            --output source.zip \
+            "$URL"
+
+          if [ ! -s source.zip ]; then
+            echo "ERROR: source.zip está vacío."
+            exit 1
+          fi
+
+          echo
+          echo "ZIP descargado:"
           ls -lh source.zip
 
-      - name: Extract ZIP
+
+      # ==================================================
+      # 6. VERIFICAR ZIP
+      # ==================================================
+
+      - name: Verify ZIP
+        shell: bash
         run: |
           set -e
+
+          echo "=========================================="
+          echo "VERIFICANDO ZIP"
+          echo "=========================================="
+
+          unzip -t source.zip
+
+          echo
+          echo "ZIP válido."
+
+
+      # ==================================================
+      # 7. EXTRAER
+      # ==================================================
+
+      - name: Extract source ZIP
+        shell: bash
+        run: |
+          set -e
+
           rm -rf source
           mkdir -p source
+
           unzip -q source.zip -d source
-          echo "=== ESTRUCTURA ==="
-          find source -maxdepth 4 -type f | sort | head -300
+
+          echo "=========================================="
+          echo "ESTRUCTURA DEL PROYECTO"
+          echo "=========================================="
+
+          find source \
+            -maxdepth 4 \
+            -type f \
+            | sort \
+            | head -400
+
+
+      # ==================================================
+      # 8. DETECTAR GRADLE
+      # ==================================================
 
       - name: Detect Gradle project
         shell: bash
         run: |
           set -e
+
+          echo "Buscando settings.gradle..."
+
           SETTINGS=$(find source \
             -type f \
-            \( -name "settings.gradle" -o -name "settings.gradle.kts" \) \
+            \( \
+              -name "settings.gradle" \
+              -o \
+              -name "settings.gradle.kts" \
+            \) \
             | head -n 1)
 
           if [ -z "$SETTINGS" ]; then
+            echo
             echo "ERROR: No se encontró settings.gradle."
+            echo
+            echo "Archivos encontrados:"
+            find source \
+              -maxdepth 5 \
+              -type f \
+              | sort \
+              | head -500
+
             exit 1
           fi
 
           PROJECT_DIR=$(dirname "$SETTINGS")
-          echo "Proyecto encontrado:"
+
+          echo
+          echo "=========================================="
+          echo "PROYECTO ENCONTRADO"
+          echo "=========================================="
           echo "$PROJECT_DIR"
+
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
 
+
+      # ==================================================
+      # 9. VALIDAR PROYECTO ANDROID
+      # ==================================================
+
       - name: Validate Android project
+        shell: bash
         run: |
           set -e
-          test -f "$PROJECT_DIR/app/build.gradle" \
-            || test -f "$PROJECT_DIR/app/build.gradle.kts"
-          test -f "$PROJECT_DIR/app/src/main/AndroidManifest.xml"
-          echo "Proyecto Android encontrado correctamente."
 
-      - name: Setup Gradle
+          echo "Proyecto:"
+          echo "$PROJECT_DIR"
+
+          echo
+          echo "Buscando build.gradle..."
+
+          if [ -f "$PROJECT_DIR/app/build.gradle" ]; then
+            echo "Encontrado: app/build.gradle"
+
+          elif [ -f "$PROJECT_DIR/app/build.gradle.kts" ]; then
+            echo "Encontrado: app/build.gradle.kts"
+
+          else
+            echo
+            echo "ERROR: No se encontró app/build.gradle"
+            echo "ni app/build.gradle.kts."
+
+            find "$PROJECT_DIR" \
+              -maxdepth 4 \
+              -type f \
+              | sort \
+              | head -500
+
+            exit 1
+          fi
+
+
+      - name: Validate AndroidManifest
+        shell: bash
+        run: |
+          set -e
+
+          MANIFEST="$PROJECT_DIR/app/src/main/AndroidManifest.xml"
+
+          if [ ! -f "$MANIFEST" ]; then
+            echo "ERROR: No se encontró:"
+            echo "$MANIFEST"
+            exit 1
+          fi
+
+          echo "AndroidManifest encontrado."
+
+
+      # ==================================================
+      # 10. INSTALAR GRADLE
+      # ==================================================
+
+      - name: Setup Gradle 8.13
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: "8.13"
 
-      - name: Show Gradle version
-        run: gradle --version
 
-      - name: Inspect project
+      # ==================================================
+      # 11. MOSTRAR VERSIONES
+      # ==================================================
+
+      - name: Show build environment
+        shell: bash
         run: |
-          echo "=== PROJECT ==="
-          find "$PROJECT_DIR" -maxdepth 3 -type f | sort | head -300
+          set -e
+
+          echo "=========================================="
+          echo "JAVA"
+          echo "=========================================="
+
+          java -version
+
           echo
-          echo "=== APP BUILD.GRADLE ==="
-          cat "$PROJECT_DIR/app/build.gradle" 2>/dev/null \
-            || cat "$PROJECT_DIR/app/build.gradle.kts" 2>/dev/null \
-            || true
+          echo "=========================================="
+          echo "GRADLE"
+          echo "=========================================="
+
+          gradle --version
+
+          echo
+          echo "=========================================="
+          echo "ANDROID SDK"
+          echo "=========================================="
+
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
+
+          echo
+          echo "=========================================="
+          echo "ADB"
+          echo "=========================================="
+
+          adb version || true
+
+
+      # ==================================================
+      # 12. INSPECCIONAR BUILD.GRADLE
+      # ==================================================
+
+      - name: Inspect Gradle configuration
+        shell: bash
+        run: |
+          set -e
+
+          echo "=========================================="
+          echo "SETTINGS.GRADLE"
+          echo "=========================================="
+
+          if [ -f "$PROJECT_DIR/settings.gradle" ]; then
+            cat "$PROJECT_DIR/settings.gradle"
+          elif [ -f "$PROJECT_DIR/settings.gradle.kts" ]; then
+            cat "$PROJECT_DIR/settings.gradle.kts"
+          fi
+
+          echo
+          echo "=========================================="
+          echo "ROOT BUILD.GRADLE"
+          echo "=========================================="
+
+          if [ -f "$PROJECT_DIR/build.gradle" ]; then
+            cat "$PROJECT_DIR/build.gradle"
+          elif [ -f "$PROJECT_DIR/build.gradle.kts" ]; then
+            cat "$PROJECT_DIR/build.gradle.kts"
+          fi
+
+          echo
+          echo "=========================================="
+          echo "APP BUILD.GRADLE"
+          echo "=========================================="
+
+          if [ -f "$PROJECT_DIR/app/build.gradle" ]; then
+            cat "$PROJECT_DIR/app/build.gradle"
+          elif [ -f "$PROJECT_DIR/app/build.gradle.kts" ]; then
+            cat "$PROJECT_DIR/app/build.gradle.kts"
+          fi
+
+
+      # ==================================================
+      # 13. COMPROBAR DEPENDENCIAS
+      # ==================================================
+
+      - name: Inspect Gradle dependencies
+        shell: bash
+        run: |
+          set +e
+
+          cd "$PROJECT_DIR"
+
+          echo "=========================================="
+          echo "DEPENDENCY REPORT"
+          echo "=========================================="
+
+          if [ -x ./gradlew ]; then
+            ./gradlew \
+              --no-daemon \
+              --stacktrace \
+              :app:dependencies
+          else
+            gradle \
+              --no-daemon \
+              --stacktrace \
+              :app:dependencies
+          fi
+
+          STATUS=$?
+
+          echo
+          echo "Dependency inspection exit code: $STATUS"
+
+          exit 0
+
+
+      # ==================================================
+      # 14. COMPILAR DEBUG
+      # ==================================================
 
       - name: Build Debug APK
         shell: bash
         run: |
-          set -e
+          set -o pipefail
+
           cd "$PROJECT_DIR"
+
+          echo "=========================================="
+          echo "INICIANDO COMPILACIÓN"
+          echo "=========================================="
+
           if [ -x ./gradlew ]; then
-            GRADLE=./gradlew
+            GRADLE="./gradlew"
           else
-            GRADLE=gradle
+            GRADLE="gradle"
           fi
-          $GRADLE \
+
+          echo "Gradle utilizado:"
+          echo "$GRADLE"
+
+          "$GRADLE" \
             --no-daemon \
             --stacktrace \
+            --info \
             --warning-mode all \
             :app:assembleDebug
 
-      - name: Locate APK
-        run: |
-          set -e
-          find "$PROJECT_DIR/app/build/outputs" \
-            -type f \
-            -name "*.apk" \
-            -print
 
-      - name: Prepare APK
+      # ==================================================
+      # 15. BUSCAR APK
+      # ==================================================
+
+      - name: Locate generated APK
         shell: bash
         run: |
           set -e
+
+          echo "=========================================="
+          echo "APKS GENERADOS"
+          echo "=========================================="
+
+          if [ -d "$PROJECT_DIR/app/build/outputs" ]; then
+
+            find "$PROJECT_DIR/app/build/outputs" \
+              -type f \
+              -name "*.apk" \
+              -print
+
+          else
+
+            echo "No existe build/outputs."
+
+          fi
+
+
+      # ==================================================
+      # 16. PREPARAR APK
+      # ==================================================
+
+      - name: Prepare APK artifact
+        shell: bash
+        run: |
+          set -e
+
           APK=$(find "$PROJECT_DIR/app/build/outputs/apk" \
             -type f \
             -name "*.apk" \
             | head -n 1)
 
           if [ -z "$APK" ]; then
-            echo "ERROR: No se generó ningún APK."
+
+            echo "=========================================="
+            echo "ERROR: NO SE GENERÓ APK"
+            echo "=========================================="
+
+            find "$PROJECT_DIR/app/build/outputs" \
+              -type f \
+              -print 2>/dev/null || true
+
             exit 1
           fi
 
+          echo "APK encontrado:"
+          echo "$APK"
+
           cp "$APK" tango-creative-live-debug.apk
+
+          echo
+          echo "APK preparado:"
           ls -lh tango-creative-live-debug.apk
 
-      - name: Upload APK
+
+      # ==================================================
+      # 17. SUBIR APK
+      # ==================================================
+
+      - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
           name: tango-creative-live-v2-debug

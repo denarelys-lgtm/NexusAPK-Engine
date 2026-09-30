@@ -21,14 +21,48 @@ jobs:
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Install Android SDK
+      - name: 3. Instalar JADX
+        shell: bash
         run: |
-          yes | sdkmanager --licenses >/dev/null || true
+          set -e
 
-          sdkmanager \
-            "platform-tools" \
-            "platforms;android-35" \
-            "build-tools;35.0.0"
+          echo "=========================================="
+          echo "          INSTALACION DE JADX"
+          echo "=========================================="
+
+          API_URL="https://api.github.com/repos/skylot/jadx/releases/latest"
+
+          JADX_TAG=$(curl -fsSL \
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Accept: application/vnd.github+json" \
+            "$API_URL" \
+            | python3 -c "import sys, json; print(json.load(sys.stdin)['tag_name'])")
+
+          if [ -z "$JADX_TAG" ]; then
+            echo "ERROR: No se pudo detectar la version de JADX."
+            exit 1
+          fi
+
+          JADX_VERSION="${JADX_TAG#v}"
+          JADX_URL="https://github.com/skylot/jadx/releases/download/${JADX_TAG}/jadx-${JADX_VERSION}.zip"
+
+          echo "Tag detectado: $JADX_TAG"
+          echo "Version: $JADX_VERSION"
+          echo "URL: $JADX_URL"
+
+          wget --show-progress -O "jadx-${JADX_VERSION}.zip" "$JADX_URL"
+
+          rm -rf jadx-tool
+          unzip -q "jadx-${JADX_VERSION}.zip" -d jadx-tool
+          chmod +x jadx-tool/bin/jadx
+
+          echo "$GITHUB_WORKSPACE/jadx-tool/bin" >> "$GITHUB_PATH"
+          export PATH="$GITHUB_WORKSPACE/jadx-tool/bin:$PATH"
+
+          echo ""
+          echo "JADX instalado:"
+          command -v jadx
+          jadx --version
 
       - name: Download rebuild1.zip
         run: |

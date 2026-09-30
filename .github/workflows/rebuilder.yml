@@ -94,7 +94,7 @@ jobs:
 
 
       # ==================================================
-      # 5. DESCARGAR EL ZIP REAL
+      # 5. DESCARGAR EL ZIP
       # ==================================================
 
       - name: Download rebuild1.zip
@@ -198,15 +198,6 @@ jobs:
           if [ -z "$SETTINGS" ]; then
             echo
             echo "ERROR: No se encontró settings.gradle."
-            echo
-            echo "Archivos encontrados:"
-
-            find source \
-              -maxdepth 5 \
-              -type f \
-              | sort \
-              | head -500
-
             exit 1
           fi
 
@@ -216,7 +207,6 @@ jobs:
           echo "=========================================="
           echo "PROYECTO ENCONTRADO"
           echo "=========================================="
-
           echo "$PROJECT_DIR"
 
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
@@ -231,25 +221,12 @@ jobs:
         run: |
           set -e
 
-          echo "Proyecto:"
-          echo "$PROJECT_DIR"
-
           if [ -f "$PROJECT_DIR/app/build.gradle" ]; then
             echo "Encontrado: app/build.gradle"
-
           elif [ -f "$PROJECT_DIR/app/build.gradle.kts" ]; then
             echo "Encontrado: app/build.gradle.kts"
-
           else
-            echo
             echo "ERROR: No se encontró app/build.gradle."
-
-            find "$PROJECT_DIR" \
-              -maxdepth 4 \
-              -type f \
-              | sort \
-              | head -500
-
             exit 1
           fi
 
@@ -283,51 +260,29 @@ jobs:
         run: |
           set -e
 
-          echo "=========================================="
-          echo "RENOMBRANDO TODOS LOS .9.png"
-          echo "=========================================="
-
           RES_DIR="$PROJECT_DIR/app/src/main/res"
 
           if [ ! -d "$RES_DIR" ]; then
-            echo "No se encontró directorio res/, saltando parche."
+            echo "No se encontró res/, saltando."
             exit 0
           fi
-
-          echo "Archivos .9.png ANTES del parche:"
-          find "$RES_DIR" -type f -name "*.9.png" | sort || true
-          echo
 
           COUNT=0
 
           while IFS= read -r -d '' FILE; do
             NEW_FILE="${FILE%.9.png}.png"
-
             if [ -e "$NEW_FILE" ]; then
               NEW_FILE="${FILE%.9}_9patch.png"
             fi
-
             mv "$FILE" "$NEW_FILE"
-            echo "→ $FILE"
-            echo "  => $NEW_FILE"
             COUNT=$((COUNT + 1))
           done < <(find "$RES_DIR" -type f -name "*.9.png" -print0)
 
-          echo
-          echo "Total de archivos renombrados: $COUNT"
-
-          echo
-          echo "Archivos .9.png DESPUÉS del parche (debería estar vacío):"
-          find "$RES_DIR" -type f -name "*.9.png" | sort || true
-
-          echo
-          echo "=========================================="
-          echo "PARCHE COMPLETADO"
-          echo "=========================================="
+          echo "Total .9.png renombrados: $COUNT"
 
 
       # ==================================================
-      # 10.6. DIAGNOSTICAR SECUENCIAS ]]> EN XML
+      # 10.6. DIAGNOSTICAR ]]> EN XML
       # ==================================================
 
       - name: Diagnose ]]> occurrences
@@ -335,18 +290,12 @@ jobs:
         shell: bash
         run: |
           RES_DIR="$PROJECT_DIR/app/src/main/res"
-
-          echo "=========================================="
-          echo "ARCHIVOS XML CON SECUENCIA ]]>"
-          echo "=========================================="
-
-          grep -rn ']]>' "$RES_DIR" \
-            --include="*.xml" \
-            | head -50 || echo "No se encontraron ocurrencias."
+          grep -rn ']]>' "$RES_DIR" --include="*.xml" | head -50 \
+            || echo "No se encontraron ocurrencias."
 
 
       # ==================================================
-      # 10.7. PARCHEAR SECUENCIAS ]]> EN XML
+      # 10.7. CORREGIR ]]> EN XML
       # ==================================================
 
       - name: Fix unescaped ]]> in XML
@@ -354,56 +303,88 @@ jobs:
         run: |
           set -e
 
-          echo "=========================================="
-          echo "CORRIGIENDO SECUENCIAS ]]> SIN ESCAPAR"
-          echo "=========================================="
-
           RES_DIR="$PROJECT_DIR/app/src/main/res"
-
-          if [ ! -d "$RES_DIR" ]; then
-            echo "No hay res/, saltando."
-            exit 0
-          fi
-
           COUNT=0
 
           while IFS= read -r -d '' FILE; do
             if grep -q ']]>' "$FILE"; then
-              echo
-              echo "→ Corrigiendo: $FILE"
-              grep -n ']]>' "$FILE" | head -10
-
               sed -i 's/]]>/]]\&gt;/g' "$FILE"
-
-              echo "  → Reemplazado."
               COUNT=$((COUNT + 1))
             fi
           done < <(find "$RES_DIR" -type f -name "*.xml" -print0)
 
-          echo
-          echo "Total archivos corregidos: $COUNT"
-
-          echo
-          echo "=========================================="
-          echo "PARCHE COMPLETADO"
-          echo "=========================================="
+          echo "Total archivos corregidos (]]>): $COUNT"
 
 
       # ==================================================
-      # 10.8. LIMPIAR INTERMEDIOS RESIDUALES
+      # 10.8. CORREGIR <plurals> SIN quantity
+      # ==================================================
+
+      - name: Fix plurals without quantity attribute
+        shell: bash
+        run: |
+          set -e
+
+          RES_DIR="$PROJECT_DIR/app/src/main/res"
+
+          python3 - "$RES_DIR" <<'PY'
+          import re, sys
+          from pathlib import Path
+
+          res_dir = Path(sys.argv[1])
+          VALID = ["other", "one", "few", "many", "two", "zero"]
+
+          def fix_plurals_block(block):
+              counter = {"i": 0}
+              def fix_item(m):
+                  full = m.group(0)
+                  if re.search(r'\bquantity\s*=', full):
+                      return full
+                  idx = counter["i"]
+                  q = VALID[idx] if idx < len(VALID) else "other"
+                  counter["i"] += 1
+                  if full.startswith("<item>"):
+                      return f'<item quantity="{q}">'
+                  return full.replace("<item", f'<item quantity="{q}"', 1)
+              return re.sub(r'<item\b[^>]*>', fix_item, block)
+
+          def fix_file(path):
+              try:
+                  text = path.read_text(encoding="utf-8")
+              except Exception:
+                  return False
+              original = text
+              text = re.sub(
+                  r'<plurals\b[^>]*>.*?</plurals>',
+                  lambda m: fix_plurals_block(m.group(0)),
+                  text, flags=re.DOTALL,
+              )
+              if text != original:
+                  path.write_text(text, encoding="utf-8")
+                  return True
+              return False
+
+          count = 0
+          for f in res_dir.rglob("*.xml"):
+              if fix_file(f):
+                  print(f"  Corregido: {f}")
+                  count += 1
+          print(f"Total archivos corregidos (plurals): {count}")
+          PY
+
+
+      # ==================================================
+      # 10.9. LIMPIAR INTERMEDIOS
       # ==================================================
 
       - name: Clean stale intermediates
         shell: bash
         run: |
           set -e
-
           cd "$PROJECT_DIR"
-
           rm -rf app/build/intermediates/incremental \
                  app/build/intermediates/merged_res \
                  app/build/intermediates/merged_res_blame_folder
-
           echo "Intermedios limpiados."
 
 
@@ -426,35 +407,23 @@ jobs:
         run: |
           set -e
 
-          echo "=========================================="
-          echo "JAVA"
-          echo "=========================================="
-          java -version
-
-          echo
-          echo "=========================================="
-          echo "GRADLE"
-          echo "=========================================="
-          gradle --version
-
-          echo
-          echo "=========================================="
-          echo "ANDROID"
-          echo "=========================================="
-          echo "ANDROID_HOME=$ANDROID_HOME"
-          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
-
-          echo
-          echo "=========================================="
-          echo "SDKMANAGER"
-          echo "=========================================="
-          sdkmanager --version
-
-          echo
-          echo "=========================================="
-          echo "ANDROID SDK PACKAGES"
-          echo "=========================================="
-          sdkmanager --list_installed | head -200
+          {
+            echo "=== JAVA ==="
+            java -version 2>&1
+            echo
+            echo "=== GRADLE ==="
+            gradle --version 2>&1
+            echo
+            echo "=== ANDROID ==="
+            echo "ANDROID_HOME=$ANDROID_HOME"
+            echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
+            echo
+            echo "=== SDKMANAGER ==="
+            sdkmanager --version 2>&1
+            echo
+            echo "=== SDK PACKAGES ==="
+            sdkmanager --list_installed 2>&1 | head -100
+          } | tee "$GITHUB_WORKSPACE/environment.log"
 
 
       # ==================================================
@@ -466,41 +435,28 @@ jobs:
         run: |
           set -e
 
-          echo "=========================================="
-          echo "SETTINGS"
-          echo "=========================================="
+          {
+            echo "=== SETTINGS ==="
+            cat "$PROJECT_DIR/settings.gradle" 2>/dev/null \
+              || cat "$PROJECT_DIR/settings.gradle.kts" 2>/dev/null \
+              || echo "(no encontrado)"
 
-          if [ -f "$PROJECT_DIR/settings.gradle" ]; then
-            cat "$PROJECT_DIR/settings.gradle"
-          elif [ -f "$PROJECT_DIR/settings.gradle.kts" ]; then
-            cat "$PROJECT_DIR/settings.gradle.kts"
-          fi
+            echo
+            echo "=== ROOT BUILD ==="
+            cat "$PROJECT_DIR/build.gradle" 2>/dev/null \
+              || cat "$PROJECT_DIR/build.gradle.kts" 2>/dev/null \
+              || echo "(no encontrado)"
 
-          echo
-          echo "=========================================="
-          echo "ROOT BUILD"
-          echo "=========================================="
-
-          if [ -f "$PROJECT_DIR/build.gradle" ]; then
-            cat "$PROJECT_DIR/build.gradle"
-          elif [ -f "$PROJECT_DIR/build.gradle.kts" ]; then
-            cat "$PROJECT_DIR/build.gradle.kts"
-          fi
-
-          echo
-          echo "=========================================="
-          echo "APP BUILD"
-          echo "=========================================="
-
-          if [ -f "$PROJECT_DIR/app/build.gradle" ]; then
-            cat "$PROJECT_DIR/app/build.gradle"
-          elif [ -f "$PROJECT_DIR/app/build.gradle.kts" ]; then
-            cat "$PROJECT_DIR/app/build.gradle.kts"
-          fi
+            echo
+            echo "=== APP BUILD ==="
+            cat "$PROJECT_DIR/app/build.gradle" 2>/dev/null \
+              || cat "$PROJECT_DIR/app/build.gradle.kts" 2>/dev/null \
+              || echo "(no encontrado)"
+          } | tee "$GITHUB_WORKSPACE/gradle-config.log"
 
 
       # ==================================================
-      # 14. DEPENDENCIAS (informativo, no bloqueante)
+      # 14. DEPENDENCIAS (informativo)
       # ==================================================
 
       - name: Inspect Gradle dependencies
@@ -516,18 +472,19 @@ jobs:
             GRADLE="gradle"
           fi
 
-          "$GRADLE" \
-            --no-daemon \
-            --stacktrace \
+          "$GRADLE" --no-daemon --stacktrace \
             :app:dependencies \
-            --configuration debugRuntimeClasspath | head -200
+            --configuration debugRuntimeClasspath 2>&1 \
+            | head -200 \
+            | tee "$GITHUB_WORKSPACE/dependencies.log"
 
 
       # ==================================================
-      # 15. COMPILAR APK
+      # 15. COMPILAR APK (guarda log completo)
       # ==================================================
 
       - name: Build Debug APK
+        id: build
         shell: bash
         run: |
           set -o pipefail
@@ -545,11 +502,134 @@ jobs:
             GRADLE="gradle"
           fi
 
+          # Guardar TODO el output a un archivo Y mostrarlo en vivo
           "$GRADLE" \
             --no-daemon \
             --stacktrace \
             --warning-mode all \
-            :app:assembleDebug
+            :app:assembleDebug 2>&1 \
+            | tee "$GITHUB_WORKSPACE/build.log"
+
+
+      # ==================================================
+      # 15.1. IMPRIMIR RESUMEN DEL FALLO (solo si falla)
+      # ==================================================
+
+      - name: Print failure summary
+        if: failure()
+        shell: bash
+        run: |
+          echo ""
+          echo "##################################################"
+          echo "#         RESUMEN DEL FALLO (copiar de aquí)     #"
+          echo "##################################################"
+          echo ""
+
+          LOG="$GITHUB_WORKSPACE/build.log"
+
+          if [ ! -f "$LOG" ]; then
+            echo "No se encontró build.log."
+            exit 0
+          fi
+
+          echo "===== FAILURE: WHAT WENT WRONG ====="
+          awk '/^FAILURE:/{flag=1} flag{print} /^\* Try:/{if(flag)exit}' \
+            "$LOG" | head -100
+
+          echo ""
+          echo "===== CAUSED BY (primeros 5) ====="
+          grep -n "Caused by:" "$LOG" | head -5
+
+          echo ""
+          echo "===== ERROR/ERROR: LINES ====="
+          grep -n "^ERROR:" "$LOG" | head -30
+
+          echo ""
+          echo "===== AAPT ERRORS ====="
+          grep -n "AAPT:" "$LOG" | head -30
+
+          echo ""
+          echo "##################################################"
+          echo "#              FIN DEL RESUMEN                   #"
+          echo "##################################################"
+
+
+      # ==================================================
+      # 15.2. RECOLECTAR DIAGNÓSTICO (solo si falla)
+      # ==================================================
+
+      - name: Collect failure diagnostics
+        if: failure()
+        shell: bash
+        run: |
+          set +e
+
+          DIAG="$GITHUB_WORKSPACE/diagnostics"
+          mkdir -p "$DIAG"
+
+          echo "Recolectando archivos en $DIAG..."
+
+          # 1. Logs ya generados
+          cp "$GITHUB_WORKSPACE/build.log"        "$DIAG/" 2>/dev/null
+          cp "$GITHUB_WORKSPACE/environment.log"  "$DIAG/" 2>/dev/null
+          cp "$GITHUB_WORKSPACE/gradle-config.log" "$DIAG/" 2>/dev/null
+          cp "$GITHUB_WORKSPACE/dependencies.log" "$DIAG/" 2>/dev/null
+
+          # 2. Archivos de configuración Gradle
+          if [ -n "$PROJECT_DIR" ] && [ -d "$PROJECT_DIR" ]; then
+            cp "$PROJECT_DIR/settings.gradle"        "$DIAG/settings.gradle"        2>/dev/null
+            cp "$PROJECT_DIR/settings.gradle.kts"    "$DIAG/settings.gradle.kts"    2>/dev/null
+            cp "$PROJECT_DIR/build.gradle"           "$DIAG/root-build.gradle"      2>/dev/null
+            cp "$PROJECT_DIR/build.gradle.kts"       "$DIAG/root-build.gradle.kts"  2>/dev/null
+            cp "$PROJECT_DIR/app/build.gradle"       "$DIAG/app-build.gradle"       2>/dev/null
+            cp "$PROJECT_DIR/app/build.gradle.kts"   "$DIAG/app-build.gradle.kts"   2>/dev/null
+            cp "$PROJECT_DIR/gradle.properties"      "$DIAG/gradle.properties"      2>/dev/null
+
+            # 3. Todos los values/*.xml (sospechosos de tener errores XML)
+            if [ -d "$PROJECT_DIR/app/src/main/res" ]; then
+              mkdir -p "$DIAG/res-values"
+              find "$PROJECT_DIR/app/src/main/res" \
+                -type d -name "values*" \
+                -exec cp -r {} "$DIAG/res-values/" \; 2>/dev/null
+
+              # 4. Listado completo de recursos
+              find "$PROJECT_DIR/app/src/main/res" -type f | sort \
+                > "$DIAG/res-files.txt" 2>/dev/null
+            fi
+
+            # 5. Árbol de directorios del proyecto
+            find "$PROJECT_DIR" -maxdepth 4 -type d | sort \
+              > "$DIAG/project-tree.txt" 2>/dev/null
+          fi
+
+          # 6. Metadatos del run
+          {
+            echo "Run ID: ${{ github.run_id }}"
+            echo "Run number: ${{ github.run_number }}"
+            echo "SHA: ${{ github.sha }}"
+            echo "Workflow: ${{ github.workflow }}"
+            echo "Ref: ${{ github.ref }}"
+            echo "Actor: ${{ github.actor }}"
+            echo "Date: $(date -u)"
+          } > "$DIAG/run-info.txt"
+
+          echo
+          echo "Contenido del directorio diagnostics:"
+          ls -laR "$DIAG" | head -100
+
+
+      # ==================================================
+      # 15.3. SUBIR DIAGNÓSTICO (solo si falla)
+      # ==================================================
+
+      - name: Upload failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-failure-diagnostics-${{ github.run_number }}
+          path: diagnostics/
+          if-no-files-found: warn
+          retention-days: 14
 
 
       # ==================================================
@@ -557,13 +637,10 @@ jobs:
       # ==================================================
 
       - name: Locate generated APK
+        if: success()
         shell: bash
         run: |
           set -e
-
-          echo "=========================================="
-          echo "APKS GENERADOS"
-          echo "=========================================="
 
           find "$PROJECT_DIR/app/build/outputs" \
             -type f \
@@ -576,6 +653,7 @@ jobs:
       # ==================================================
 
       - name: Prepare APK artifact
+        if: success()
         shell: bash
         run: |
           set -e
@@ -590,13 +668,8 @@ jobs:
             exit 1
           fi
 
-          echo "APK encontrado:"
-          echo "$APK"
-
+          echo "APK encontrado: $APK"
           cp "$APK" tango-creative-live-debug.apk
-
-          echo
-          echo "APK preparado:"
           ls -lh tango-creative-live-debug.apk
 
 
@@ -605,6 +678,7 @@ jobs:
       # ==================================================
 
       - name: Upload APK artifact
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: tango-creative-live-v2-debug

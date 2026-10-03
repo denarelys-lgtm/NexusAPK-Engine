@@ -224,7 +224,7 @@ jobs:
 
 
       # ==================================================
-      # 10.b  CHMOD +x gradlew    # >>> FIX
+      # 10.b  CHMOD +x gradlew
       # ==================================================
 
       - name: Ensure gradlew is executable
@@ -283,16 +283,16 @@ jobs:
 
 
       # ==================================================
-      # 11.b  FIX CDATA ]]> EN STRINGS.XML    # >>> FIX
+      # 11.b  FIX CDATA ]]> EN TODOS LOS XML DE values*/
       # ==================================================
 
-      - name: Fix broken CDATA terminators in strings.xml
+      - name: Fix broken CDATA terminators in all values XML
         shell: bash
         run: |
           set -e
 
           echo "=========================================="
-          echo "FIX ]]> EN STRINGS.XML"
+          echo "FIX ]]> EN TODOS LOS XML DE values*"
           echo "=========================================="
 
           FIXED=0
@@ -301,21 +301,30 @@ jobs:
 
             if grep -qF "]]>" "$FILE"; then
 
-              echo "Corrigiendo: $FILE"
+              if ! grep -qF "CDATA" "$FILE"; then
 
-              # Elimina el ]]> suelto que precede a </item> o </string>
-              # sin tocar los CDATA reales (que están balanceados).
-              sed -i 's/\]\]><\/item>/<\/item>/g' "$FILE"
-              sed -i 's/\]\]><\/string>/<\/string>/g' "$FILE"
+                echo "Eliminando ]]> en (sin CDATA): $FILE"
 
-              FIXED=$((FIXED + 1))
+                sed -i 's/\]\]>//g' "$FILE"
+
+                FIXED=$((FIXED + 1))
+
+              else
+
+                echo "Eliminando ]]> huérfano en (con CDATA): $FILE"
+
+                sed -i -E 's/\]\]>(<\/(item|string|plurals|array|string-array|integer-array)>)/\1/g' "$FILE"
+
+                FIXED=$((FIXED + 1))
+
+              fi
 
             fi
 
           done < <(
-            find "$PROJECT_DIR/app/src" \
+            find "$PROJECT_DIR/app/src/main/res" \
               -type f \
-              -name "strings.xml" \
+              -path "*/values*/*.xml" \
               -print
           )
 
@@ -324,16 +333,16 @@ jobs:
 
 
       # ==================================================
-      # 11.c  FIX CDATA ]]> EN plurals.xml    # >>> FIX
+      # 11.c  FIX CDATA ]]> EN OTROS XML
       # ==================================================
 
-      - name: Fix broken CDATA terminators in plurals.xml
+      - name: Fix broken CDATA terminators in other XML
         shell: bash
         run: |
           set -e
 
           echo "=========================================="
-          echo "FIX ]]> EN PLURALS.XML"
+          echo "FIX ]]> EN XML FUERA DE values*/"
           echo "=========================================="
 
           FIXED=0
@@ -342,18 +351,19 @@ jobs:
 
             if grep -qF "]]>" "$FILE"; then
 
-              echo "Corrigiendo: $FILE"
-
-              sed -i 's/\]\]><\/item>/<\/item>/g' "$FILE"
-
-              FIXED=$((FIXED + 1))
+              if ! grep -qF "CDATA" "$FILE"; then
+                echo "Eliminando ]]> en: $FILE"
+                sed -i 's/\]\]>//g' "$FILE"
+                FIXED=$((FIXED + 1))
+              fi
 
             fi
 
           done < <(
-            find "$PROJECT_DIR/app/src" \
+            find "$PROJECT_DIR/app/src/main/res" \
               -type f \
-              -name "plurals.xml" \
+              -name "*.xml" \
+              -not -path "*/values*/*" \
               -print
           )
 
@@ -362,7 +372,7 @@ jobs:
 
 
       # ==================================================
-      # 11.d  FIX integers.xml inválidos    # >>> FIX
+      # 11.d  FIX integers.xml inválidos
       # ==================================================
 
       - name: Fix invalid integer resources
@@ -382,8 +392,6 @@ jobs:
           echo "=========================================="
           cat -n "$FILE" | sed -n '1,130p'
 
-          # Comenta las líneas problemáticas conocidas.
-          # Si el proyecto las corrige, el sed no hace nada.
           for N in 11 12 112 113; do
             sed -i "${N}s|^\(.*\)$|<!-- FIXED BY CI: \1 -->|" "$FILE"
           done
@@ -396,30 +404,111 @@ jobs:
 
 
       # ==================================================
-      # 11.e  ELIMINAR PNG 9-PATCH CORRUPTOS    # >>> FIX
+      # 11.e  ELIMINAR TODOS LOS PNG 9-PATCH abc_*
       # ==================================================
 
-      - name: Remove broken abc_list_divider 9-patch PNGs
+      - name: Remove ALL broken abc_* 9-patch PNGs
         shell: bash
         run: |
           set -e
 
           echo "=========================================="
-          echo "ELIMINANDO 9-PATCH CORRUPTOS"
+          echo "ELIMINANDO TODOS LOS abc_*.9.png"
           echo "=========================================="
+
+          echo "Antes:"
+          find "$PROJECT_DIR/app/src/main/res" \
+            -type f \
+            -name "abc_*.9.png" \
+            -print | head -50 || true
 
           find "$PROJECT_DIR/app/src/main/res" \
             -type f \
-            -name "abc_list_divider_mtrl_alpha.9.png" \
-            -print \
+            -name "abc_*.9.png" \
+            -delete
+
+          find "$PROJECT_DIR/app/src/main/res" \
+            -type f \
+            -name "abc_*mtrl*.png" \
             -delete
 
           echo
-          echo "Restantes (no debería quedar ninguno):"
+          echo "Después (no debería quedar nada):"
           find "$PROJECT_DIR/app/src/main/res" \
             -type f \
-            -name "abc_list_divider_mtrl_alpha.9.png" \
+            -name "abc_*.png" \
             -print || true
+
+
+      # ==================================================
+      # 11.f  FIX PLURALS SIN quantity (NPE values-hi/uk)
+      # ==================================================
+
+      - name: Fix plurals with missing quantity attribute
+        shell: bash
+        run: |
+          set -e
+
+          echo "=========================================="
+          echo "FIX PLURALS CON <item> SIN quantity"
+          echo "=========================================="
+
+          python3 << 'PYEOF'
+          import os
+          import re
+          import glob
+
+          BASE = os.environ.get("PROJECT_DIR", "source")
+          RES = os.path.join(BASE, "app", "src", "main", "res")
+
+          if not os.path.isdir(RES):
+              print(f"Directorio no existe: {RES}")
+              raise SystemExit(0)
+
+          fixed_files = 0
+
+          for path in glob.glob(os.path.join(RES, "values*", "*.xml")):
+              with open(path, "r", encoding="utf-8") as f:
+                  content = f.read()
+
+              original = content
+
+              def fix_plural_block(m):
+                  block = m.group(0)
+                  def fix_item(im):
+                      item = im.group(0)
+                      if re.search(r'\bquantity\s*=', item):
+                          return item
+                      return re.sub(
+                          r'<item\b',
+                          '<item quantity="other"',
+                          item,
+                          count=1
+                      )
+                  return re.sub(r'<item\b[^>]*/?>', fix_item, block)
+
+              content = re.sub(
+                  r'<plurals\b[^>]*>.*?</plurals>',
+                  fix_plural_block,
+                  content,
+                  flags=re.DOTALL
+              )
+
+              content = re.sub(
+                  r'<plurals\b(?![^>]*\bname\s*=)[^>]*>.*?</plurals>\s*',
+                  '',
+                  content,
+                  flags=re.DOTALL
+              )
+
+              if content != original:
+                  with open(path, "w", encoding="utf-8") as f:
+                      f.write(content)
+                  fixed_files += 1
+                  print(f"Corregido: {path}")
+
+          print(f"Archivos corregidos: {fixed_files}")
+          PYEOF
 
 
       # ==================================================
@@ -481,7 +570,6 @@ jobs:
             cat "$REPORT"
           fi
 
-          # Diagnóstico solamente.
           exit 0
 
 

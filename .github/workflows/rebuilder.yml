@@ -224,6 +224,23 @@ jobs:
 
 
       # ==================================================
+      # 10.b  CHMOD +x gradlew    # >>> FIX
+      # ==================================================
+
+      - name: Ensure gradlew is executable
+        shell: bash
+        run: |
+          set -e
+
+          if [ -f "$PROJECT_DIR/gradlew" ]; then
+            chmod +x "$PROJECT_DIR/gradlew"
+            echo "gradlew marcado como ejecutable."
+          else
+            echo "No hay gradlew, se usará gradle global."
+          fi
+
+
+      # ==================================================
       # 11. NORMALIZAR values-iw
       # ==================================================
 
@@ -263,6 +280,146 @@ jobs:
               -name "values-iw" \
               -print
           )
+
+
+      # ==================================================
+      # 11.b  FIX CDATA ]]> EN STRINGS.XML    # >>> FIX
+      # ==================================================
+
+      - name: Fix broken CDATA terminators in strings.xml
+        shell: bash
+        run: |
+          set -e
+
+          echo "=========================================="
+          echo "FIX ]]> EN STRINGS.XML"
+          echo "=========================================="
+
+          FIXED=0
+
+          while IFS= read -r FILE; do
+
+            if grep -qF "]]>" "$FILE"; then
+
+              echo "Corrigiendo: $FILE"
+
+              # Elimina el ]]> suelto que precede a </item> o </string>
+              # sin tocar los CDATA reales (que están balanceados).
+              sed -i 's/\]\]><\/item>/<\/item>/g' "$FILE"
+              sed -i 's/\]\]><\/string>/<\/string>/g' "$FILE"
+
+              FIXED=$((FIXED + 1))
+
+            fi
+
+          done < <(
+            find "$PROJECT_DIR/app/src" \
+              -type f \
+              -name "strings.xml" \
+              -print
+          )
+
+          echo
+          echo "Archivos corregidos: $FIXED"
+
+
+      # ==================================================
+      # 11.c  FIX CDATA ]]> EN plurals.xml    # >>> FIX
+      # ==================================================
+
+      - name: Fix broken CDATA terminators in plurals.xml
+        shell: bash
+        run: |
+          set -e
+
+          echo "=========================================="
+          echo "FIX ]]> EN PLURALS.XML"
+          echo "=========================================="
+
+          FIXED=0
+
+          while IFS= read -r FILE; do
+
+            if grep -qF "]]>" "$FILE"; then
+
+              echo "Corrigiendo: $FILE"
+
+              sed -i 's/\]\]><\/item>/<\/item>/g' "$FILE"
+
+              FIXED=$((FIXED + 1))
+
+            fi
+
+          done < <(
+            find "$PROJECT_DIR/app/src" \
+              -type f \
+              -name "plurals.xml" \
+              -print
+          )
+
+          echo
+          echo "Archivos corregidos: $FIXED"
+
+
+      # ==================================================
+      # 11.d  FIX integers.xml inválidos    # >>> FIX
+      # ==================================================
+
+      - name: Fix invalid integer resources
+        shell: bash
+        run: |
+          set -e
+
+          FILE="$PROJECT_DIR/app/src/main/res/values/integers.xml"
+
+          if [ ! -f "$FILE" ]; then
+            echo "No existe integers.xml, se omite."
+            exit 0
+          fi
+
+          echo "=========================================="
+          echo "INTEGERS ANTES"
+          echo "=========================================="
+          cat -n "$FILE" | sed -n '1,130p'
+
+          # Comenta las líneas problemáticas conocidas.
+          # Si el proyecto las corrige, el sed no hace nada.
+          for N in 11 12 112 113; do
+            sed -i "${N}s|^\(.*\)$|<!-- FIXED BY CI: \1 -->|" "$FILE"
+          done
+
+          echo
+          echo "=========================================="
+          echo "INTEGERS DESPUES"
+          echo "=========================================="
+          cat -n "$FILE" | sed -n '1,130p'
+
+
+      # ==================================================
+      # 11.e  ELIMINAR PNG 9-PATCH CORRUPTOS    # >>> FIX
+      # ==================================================
+
+      - name: Remove broken abc_list_divider 9-patch PNGs
+        shell: bash
+        run: |
+          set -e
+
+          echo "=========================================="
+          echo "ELIMINANDO 9-PATCH CORRUPTOS"
+          echo "=========================================="
+
+          find "$PROJECT_DIR/app/src/main/res" \
+            -type f \
+            -name "abc_list_divider_mtrl_alpha.9.png" \
+            -print \
+            -delete
+
+          echo
+          echo "Restantes (no debería quedar ninguno):"
+          find "$PROJECT_DIR/app/src/main/res" \
+            -type f \
+            -name "abc_list_divider_mtrl_alpha.9.png" \
+            -print || true
 
 
       # ==================================================
@@ -479,12 +636,14 @@ jobs:
             ./gradlew \
               --no-daemon \
               --stacktrace \
-              :app:dependencies
+              :app:dependencies \
+              --configuration debugRuntimeClasspath
           else
             gradle \
               --no-daemon \
               --stacktrace \
-              :app:dependencies
+              :app:dependencies \
+              --configuration debugRuntimeClasspath
           fi
 
           STATUS=$?

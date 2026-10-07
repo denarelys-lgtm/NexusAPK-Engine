@@ -6,6 +6,7 @@ on:
       - 'input_apk/**'
       - '.github/workflows/decompiler.yml'
       - 'scripts/**'
+      - 'templates/**'
   workflow_dispatch:
 
 jobs:
@@ -261,7 +262,6 @@ jobs:
           echo "              ZIPALIGN"
           echo "=========================================="
 
-          # Localizar build-tools del Android SDK preinstalado en el runner
           BT_DIR=$(find "$ANDROID_HOME/build-tools" -maxdepth 1 -type d | sort -V | tail -1)
 
           if [ -z "$BT_DIR" ]; then
@@ -373,6 +373,115 @@ jobs:
           name: decompiled-source
           path: output_project/
           if-no-files-found: error
+
+      # ==================================================
+      # 14.0  DESCARGAR GRADLE WRAPPER
+      # ==================================================
+
+      - name: 14.0. Descargar Gradle wrapper 8.13
+        shell: bash
+        run: |
+          set -e
+
+          echo "=========================================="
+          echo "     DESCARGANDO GRADLE WRAPPER"
+          echo "=========================================="
+
+          mkdir -p templates/gradle/wrapper
+
+          curl -fsSL \
+            "https://raw.githubusercontent.com/gradle/gradle/v8.13.0/gradle/wrapper/gradle-wrapper.jar" \
+            -o templates/gradle/wrapper/gradle-wrapper.jar
+
+          test -s templates/gradle/wrapper/gradle-wrapper.jar
+
+          cat > templates/gradle/wrapper/gradle-wrapper.properties << 'EOF'
+          distributionBase=GRADLE_USER_HOME
+          distributionPath=wrapper/dists
+          distributionUrl=https\://services.gradle.org/distributions/gradle-8.13-bin.zip
+          networkTimeout=10000
+          validateDistributionUrl=true
+          zipStoreBase=GRADLE_USER_HOME
+          zipStorePath=wrapper/dists
+          EOF
+
+          curl -fsSL \
+            "https://raw.githubusercontent.com/gradle/gradle/v8.13.0/gradlew" \
+            -o templates/gradlew
+
+          curl -fsSL \
+            "https://raw.githubusercontent.com/gradle/gradle/v8.13.0/gradlew.bat" \
+            -o templates/gradlew.bat
+
+          chmod +x templates/gradlew
+
+          echo ""
+          echo "Wrapper descargado:"
+          ls -la templates/
+          ls -la templates/gradle/wrapper/
+
+      # ==================================================
+      # 14.5  GENERAR rebuild1.zip
+      # ==================================================
+
+      - name: 14.5. Generar rebuild1.zip
+        shell: bash
+        run: |
+          set -e
+
+          echo "=========================================="
+          echo "   EMPAQUETANDO PROYECTO COMPILABLE"
+          echo "=========================================="
+
+          python3 scripts/prepare_buildable_project.py
+
+          echo ""
+          echo "Contenido del ZIP (primeros 60):"
+          unzip -l rebuild1.zip | head -60
+
+          echo ""
+          echo "Tamano:"
+          ls -lh rebuild1.zip
+
+      # ==================================================
+      # 14.6  SUBIR rebuild1.zip COMO ARTIFACT
+      # ==================================================
+
+      - name: 14.6. Subir rebuild1.zip como artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: rebuild1-project
+          path: rebuild1.zip
+          if-no-files-found: error
+          retention-days: 30
+
+      # ==================================================
+      # 14.7  PUBLICAR EN RELEASE
+      # ==================================================
+
+      - name: 14.7. Publicar rebuild1.zip en Release
+        if: success()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+
+          echo "=========================================="
+          echo "    PUBLICANDO EN RELEASE build1"
+          echo "=========================================="
+
+          TAG="build1"
+
+          gh release view "$TAG" >/dev/null 2>&1 || \
+            gh release create "$TAG" \
+              --title "Build $TAG" \
+              --notes "Proyecto compilable generado automaticamente." \
+              --target "${{ github.sha }}"
+
+          gh release upload "$TAG" rebuild1.zip --clobber
+
+          echo "OK: rebuild1.zip publicado en release '$TAG'."
 
       - name: 15. Sincronizar Codigo Fuente (rama snapshot)
         env:

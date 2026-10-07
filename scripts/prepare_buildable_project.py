@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-"""Convierte output_project/ (JADX) en rebuild1.zip compilable."""
 import os
 import re
 import shutil

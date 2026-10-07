@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-"""Saneamiento del codigo Java de JADX."""
 import os
 import re
 import sys

@@ -21,6 +21,7 @@ android {
             minifyEnabled false
             shrinkResources false
         }
+
         release {
             minifyEnabled false
             shrinkResources false
@@ -46,6 +47,7 @@ android {
                 'META-INF/NOTICE',
             ]
         }
+
         jniLibs {
             useLegacyPackaging = true
         }
@@ -54,6 +56,20 @@ android {
     lint {
         abortOnError false
         checkReleaseBuilds false
+    }
+
+    /*
+     * Mantiene los VectorDrawable como XML para evitar que AAPT2
+     * intente convertirlos a PNG durante el build.
+     *
+     * Esto es importante porque el proyecto decompilado contiene
+     * vectores que utilizan referencias como:
+     *
+     * @color/...
+     * ?attr/...
+     */
+    vectorDrawables {
+        useSupportLibrary true
     }
 
     buildFeatures {
@@ -67,5 +83,6 @@ dependencies {
     implementation 'androidx.constraintlayout:constraintlayout:2.1.4'
     implementation 'com.google.android.material:material:1.12.0'
     implementation 'androidx.multidex:multidex:2.0.1'
+
     coreLibraryDesugaring 'com.android.tools:desugar_jdk_libs:2.1.2'
 }

@@ -1,11 +1,35 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+"""
+NexusAPK-Engine — scripts/prepare_buildable_project.py
+
+Prepara un proyecto Android decompilado (JADX + Apktool) para recompilarlo
+con Gradle 8.13 + AGP + AAPT2 sobre Java 17 / SDK 34.
+
+Reparaciones aplicadas:
+  * remove_9patch   : renombra .9.png inválidos a .png
+  * fix_plurals     : normaliza <plurals> para que AAPT2 no reviente con
+                      TableExtractor.parsePlural() NullPointerException
+  * fix_cdata       : convierte CDATA problemática en texto escapado
+  * fix_integers    : normaliza <integer> mal tipados
+  * fix_hebrew      : ajustes de RTL en values-iw / values-he
+  * fix_manifest    : normaliza AndroidManifest.xml
+  * replace_gradle_files / replace_wrapper : plantillas propias
+  * create_rebuild_zip : empaqueta el proyecto final en rebuild1.zip
+
+Uso:
+    python3 scripts/prepare_buildable_project.py <project_dir> [rebuild1.zip]
+    python3 scripts/prepare_buildable_project.py          (auto-detecta)
+    PROJECT_DIR=./output_project ZIP_OUT=./rebuild1.zip \
+        python3 scripts/prepare_buildable_project.py
+"""
+
 from __future__ import annotations
 
 import os
 import re
 import sys
-import shutil
+import zipfile
 import logging
 from pathlib import Path
 from xml.sax.saxutils import escape as xml_escape
@@ -29,6 +53,7 @@ WRAPPER_PROPS = WRAPPER_DIR / "gradle-wrapper.properties"
 
 VALID_QUANTITIES     = ("zero", "one", "two", "few", "many", "other")
 VALID_QUANTITIES_SET = set(VALID_QUANTITIES)
+
 
 # --------------------------------------------------------------------------- #
 # Utilidades
@@ -71,7 +96,6 @@ def remove_9patch(res_root: Path) -> None:
             log.warning(f"remove_9patch: no se pudo leer {p}: {e}")
             continue
         if b"npTc" in data:
-            # Es un 9-patch válido, no tocar
             continue
         new_name = p.name[:-len(".9.png")] + ".png"
         new_path = p.with_name(new_name)
@@ -97,13 +121,7 @@ _COMMENT_RE   = re.compile(r"<!--.*?-->", re.DOTALL)
 
 
 def _find_items(body: str):
-    """
-    Devuelve [(attrs_raw, content), ...] para cada <item> dentro de `body`.
-
-    - Soporta <item .../> y <item ...>contenido</item>
-    - Soporta atributos con cualquier espaciado / saltos de línea
-    - No asume orden ni estructura
-    """
+    """Devuelve [(attrs_raw, content), ...] para cada <item> dentro de `body`."""
     items = []
     pos = 0
     while True:
@@ -118,14 +136,13 @@ def _find_items(body: str):
         self_close = raw_open.rstrip().endswith("/")
         attrs = raw_open[len("<item"):]
         if self_close:
-            attrs = attrs.rstrip()[:-1]  # quitar la '/'
+            attrs = attrs.rstrip()[:-1]
             items.append((attrs, ""))
             pos = open_end + 1
             continue
         content_start = open_end + 1
         end_m = re.search(r"</item\s*>", body[content_start:], re.IGNORECASE)
         if not end_m:
-            # <item> sin cierre → tomar el resto
             items.append((attrs, body[content_start:]))
             break
         content = body[content_start: content_start + end_m.start()]
@@ -138,41 +155,31 @@ def _sanitize_item_content(s: str) -> str:
     """Convierte el contenido crudo de un <item> en texto XML válido."""
     s = s.strip()
 
-    # CDATA → texto escapado (una sola vez, sin doble escape)
     m = re.fullmatch(r"<!\[CDATA\[(.*?)\]\]>", s, re.DOTALL)
     if m:
         return xml_escape(m.group(1)).strip()
 
-    # Comentarios internos fuera
     s = _COMMENT_RE.sub("", s)
-
-    # & "sueltos" → &amp;, pero preservando entidades ya válidas
     s = _BARE_AMP_RE.sub("&amp;", s)
-
     return s.strip()
 
 
 def _rebuild_plurals(attrs: str, body: str, source: Path):
-    """
-    Reconstruye un bloque <plurals ...> ... </plurals>.
-    Devuelve (nuevo_bloque, num_reparaciones).
-    """
+    """Reconstruye un bloque <plurals ...> ... </plurals>."""
     name_m = _NAME_RE.search(attrs)
     name = name_m.group(1) if name_m else "<?>"
 
     raw_items = _find_items(body)
 
     if not raw_items:
-        # <plurals> sin items: AAPT2 podría NPE. No lo tocamos aquí, se
-        # reportará en auditoría; preferimos no generar contenido artificial.
         log.warning(
             f"{source}: <plurals name=\"{name}\"> sin <item>. "
             f"Se deja intacto (auditoría lo reportará)."
         )
         return f"<plurals{attrs}>{body}</plurals>", 0
 
-    seen = {}     # quantity -> contenido saneado
-    order = []    # orden de aparición de cantidades
+    seen = {}
+    order = []
     repaired = 0
 
     for item_attrs, content in raw_items:
@@ -218,7 +225,6 @@ def _rebuild_plurals(attrs: str, body: str, source: Path):
         seen[q] = sanitized
         order.append(q)
 
-    # Si NO quedó ningún item, rescatamos el primero (nunca borrar el recurso)
     if not order:
         _, content0 = raw_items[0]
         seen["other"] = _sanitize_item_content(content0)
@@ -229,7 +235,6 @@ def _rebuild_plurals(attrs: str, body: str, source: Path):
             f"se conserva el primero como quantity=\"other\""
         )
 
-    # Si no hubo cambios reales, devolvemos el bloque original intacto
     if repaired == 0:
         return f"<plurals{attrs}>{body}</plurals>", 0
 
@@ -241,10 +246,7 @@ def _rebuild_plurals(attrs: str, body: str, source: Path):
 
 
 def fix_plurals(res_root: Path) -> None:
-    """
-    Recorre TODOS los values*/**.xml y repara cada <plurals>.
-    Verifica well-formedness antes de escribir.
-    """
+    """Recorre TODOS los values*/**.xml y repara cada <plurals>."""
     if not res_root.is_dir():
         log.warning(f"fix_plurals: {res_root} no existe")
         return
@@ -277,7 +279,6 @@ def fix_plurals(res_root: Path) -> None:
         if new_text == text:
             continue
 
-        # Verificación: solo escribimos si sigue siendo XML bien formado
         try:
             ET.fromstring(new_text)
         except ET.ParseError as e:
@@ -302,10 +303,7 @@ def fix_plurals(res_root: Path) -> None:
 
 
 def audit_plurals(res_root: Path) -> int:
-    """
-    Pase final de diagnóstico: reporta cualquier <item> dentro de <plurals>
-    que se haya quedado sin 'quantity' válida. Devuelve el nº de incidencias.
-    """
+    """Reporta <item> dentro de <plurals> sin 'quantity' válida."""
     issues = 0
     for f in iter_values_xml(res_root):
         try:
@@ -350,7 +348,6 @@ def fix_cdata(res_root: Path) -> None:
             return xml_escape(m.group(1))
 
         new_text = _CDATA_INNER.sub(_repl, text)
-
         if new_text == text:
             continue
         try:
@@ -368,15 +365,38 @@ def fix_cdata(res_root: Path) -> None:
 # 4. Integers
 # --------------------------------------------------------------------------- #
 
+_INT_RE = re.compile(r"<integer\b([^>]*)>(.*?)</integer>", re.DOTALL | re.IGNORECASE)
+_REF_RE = re.compile(r"^@(?:\+?android:)?integer/[\w.]+$")
+_INT_LITERAL_RE = re.compile(r"^-?\d+$")
+_DP_LITERAL_RE  = re.compile(r"^-?\d+(?:\.\d+)?(?:dip|dp|sp|px|pt|in|mm)$")
+
+
+def _is_valid_integer_body(body: str) -> bool:
+    """Un <integer> válido es un literal entero o una referencia @integer/..."""
+    b = (body or "").strip()
+    if not b:
+        return False
+    if _INT_LITERAL_RE.match(b):
+        return True
+    if _REF_RE.match(b):
+        return True
+    return False
+
+
+def _looks_like_dimen(body: str) -> bool:
+    b = (body or "").strip()
+    return bool(_DP_LITERAL_RE.match(b)) or bool(re.match(r"^-?\d+\.\d+$", b))
+
+
 def fix_integers(res_root: Path) -> None:
     """
-    Normaliza <integer> mal tipados. Si el APK original tenía <integer>
-    con contenido no numérico, AAPT2 rechaza. Los sustituimos por 0 y
-    logueamos para que sea visible.
+    Normaliza <integer> con contenido no numérico.
+      - '@integer/...' → legítimo, se deja tal cual.
+      - '2.355' / '2.46dp' → parece <dimen>: se convierte a <dimen>.
+      - Cualquier otra cosa no numérica → se fuerza a 0 (último recurso).
     """
     if not res_root.is_dir():
         return
-    pattern = re.compile(r"<integer\b([^>]*)>(.*?)</integer>", re.DOTALL | re.IGNORECASE)
     touched = 0
     for f in iter_values_xml(res_root):
         try:
@@ -386,17 +406,34 @@ def fix_integers(res_root: Path) -> None:
         if "<integer" not in text:
             continue
 
+        local_changes = 0
+
         def _repl(m):
+            nonlocal local_changes
             attrs, body = m.group(1), m.group(2).strip()
-            if re.fullmatch(r"-?\d+", body or ""):
+            if _is_valid_integer_body(body):
                 return m.group(0)
+
+            if _looks_like_dimen(body):
+                # Apktool clasificó mal: esto es un dimen
+                fixed_body = body
+                if re.match(r"^-?\d+\.\d+$", body):
+                    fixed_body = f"{body}dp"
+                local_changes += 1
+                log.warning(
+                    f"fix_integers: {f}: <integer{attrs}> con valor de dimen "
+                    f"{body!r} → convertido a <dimen>{fixed_body}</dimen>"
+                )
+                return f"<dimen{attrs}>{fixed_body}</dimen>"
+
+            local_changes += 1
             log.warning(
                 f"fix_integers: {f}: <integer{attrs}> con valor no numérico "
                 f"{body!r} → 0"
             )
             return f"<integer{attrs}>0</integer>"
 
-        new_text = pattern.sub(_repl, text)
+        new_text = _INT_RE.sub(_repl, text)
         if new_text != text:
             write_text(f, new_text)
             touched += 1
@@ -409,10 +446,7 @@ def fix_integers(res_root: Path) -> None:
 # --------------------------------------------------------------------------- #
 
 def fix_hebrew(res_root: Path) -> None:
-    """
-    Normaliza el locale hebreo: Android moderno usa values-iw; algunos APKs
-    vienen con values-he. Se renombra values-he → values-iw.
-    """
+    """values-he → values-iw (locale canónico moderno)."""
     if not res_root.is_dir():
         return
     he = res_root / "values-he"
@@ -430,7 +464,7 @@ def fix_hebrew(res_root: Path) -> None:
 # --------------------------------------------------------------------------- #
 
 def fix_manifest(project_root: Path) -> None:
-    """Asegura atributos mínimos y elimina los no soportados en AGP moderno."""
+    """Elimina 'package=' (AGP moderno lo gestiona vía namespace)."""
     mf = project_root / MANIFEST_REL
     if not mf.is_file():
         log.warning(f"fix_manifest: {mf} no existe")
@@ -442,7 +476,6 @@ def fix_manifest(project_root: Path) -> None:
         return
 
     original = text
-    # Elimina 'package=' del manifest (AGP lo gestiona vía namespace)
     text = re.sub(r'\s+package\s*=\s*"[^"]*"', "", text, count=1)
 
     if text != original:
@@ -528,7 +561,6 @@ zipStorePath=wrapper/dists
 
 
 def replace_gradle_files(project_root: Path) -> None:
-    """Sustituye build.gradle, settings.gradle y gradle.properties por plantillas."""
     for rel, tpl in [
         (APP_GRADLE,  APP_BUILD_GRADLE_TEMPLATE),
         (ROOT_GRADLE, ROOT_BUILD_GRADLE_TEMPLATE),
@@ -546,11 +578,55 @@ def replace_gradle_files(project_root: Path) -> None:
 
 
 def replace_wrapper(project_root: Path) -> None:
-    """Reescribe gradle-wrapper.properties con Gradle 8.13."""
     wd = project_root / WRAPPER_DIR
     wd.mkdir(parents=True, exist_ok=True)
     write_text(project_root / WRAPPER_PROPS, WRAPPER_PROPS_TEMPLATE)
     log.info("replace_wrapper: gradle-wrapper.properties actualizado a 8.13")
+
+
+# --------------------------------------------------------------------------- #
+# 8. ZIP del proyecto
+# --------------------------------------------------------------------------- #
+
+def create_rebuild_zip(project_root: Path, zip_path: Path) -> None:
+    """
+    Empaqueta el CONTENIDO del proyecto en zip_path (no el directorio como tal).
+    Así el workflow de compilación puede hacer:
+        unzip -q rebuild1.zip -d project && cd project
+    y encontrarse app/, settings.gradle, build.gradle, etc. en el nivel raíz.
+    """
+    project_root = project_root.resolve()
+    zip_path = zip_path.resolve()
+    zip_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if zip_path.exists():
+        zip_path.unlink()
+
+    file_count = 0
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
+        for root, dirs, files in os.walk(project_root):
+            # Excluir carpetas de build/output que no deben recompilarse
+            dirs[:] = [
+                d for d in dirs
+                if d not in (".git", ".gradle", "build", ".idea")
+            ]
+            for fname in files:
+                fp = Path(root) / fname
+                try:
+                    arcname = fp.relative_to(project_root)
+                except ValueError:
+                    continue
+                try:
+                    zf.write(fp, str(arcname))
+                    file_count += 1
+                except Exception as e:
+                    log.warning(f"create_rebuild_zip: no se pudo añadir {fp}: {e}")
+
+    size_mb = zip_path.stat().st_size / (1024 * 1024)
+    log.info(
+        f"create_rebuild_zip: {zip_path} creado "
+        f"({file_count} archivos, {size_mb:.2f} MB)"
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -560,40 +636,22 @@ def replace_wrapper(project_root: Path) -> None:
 def apply_fixes(project_root: Path) -> None:
     res_root = project_root / RES_REL
 
-    # 1. Recursos binarios
     remove_9patch(res_root)
 
-    # 2. XML de values
-    fix_plurals(res_root)         # ← PRIMERO (maneja CDATA interna de plurals)
+    fix_plurals(res_root)         # ← primero
     fix_cdata(res_root)
     fix_integers(res_root)
     fix_hebrew(res_root)
 
-    # 3. Manifest
     fix_manifest(project_root)
 
-    # 4. Gradle
     replace_gradle_files(project_root)
     replace_wrapper(project_root)
 
-    # 5. Auditoría final — no modifica nada, solo reporta
     audit_plurals(res_root)
 
 
 def _autodetect_project_root() -> Path | None:
-    """
-    Cuando no se pasa argumento, intenta localizar el proyecto decompilado.
-
-    Orden de búsqueda:
-      1. Variable de entorno PROJECT_DIR
-      2. Directorio actual si ya contiene app/src/main/AndroidManifest.xml
-      3. Subdirectorios típicos: project/, build_project/, decompiled/,
-         output/, out/, apk_project/, app_decompiled/
-      4. Cualquier subdirectorio de primer nivel que contenga
-         app/src/main/AndroidManifest.xml
-
-    Devuelve None si no encuentra nada plausible.
-    """
     env = os.environ.get("PROJECT_DIR")
     if env:
         p = Path(env).resolve()
@@ -602,21 +660,19 @@ def _autodetect_project_root() -> Path | None:
 
     cwd = Path.cwd()
 
-    # 2. cwd ya es un proyecto Android
     if (cwd / "app/src/main/AndroidManifest.xml").is_file():
         return cwd
 
-    # 3. nombres típicos
     candidates = [
-        "project", "build_project", "decompiled", "output", "out",
-        "apk_project", "app_decompiled", "rebuilt", "rebuilt_project",
+        "output_project", "project", "build_project", "decompiled",
+        "output", "out", "apk_project", "app_decompiled",
+        "rebuilt", "rebuilt_project",
     ]
     for name in candidates:
         p = cwd / name
         if (p / "app/src/main/AndroidManifest.xml").is_file():
             return p.resolve()
 
-    # 4. barrido de primer nivel
     try:
         for p in sorted(cwd.iterdir()):
             if not p.is_dir():
@@ -630,7 +686,7 @@ def _autodetect_project_root() -> Path | None:
 
 
 def main(argv):
-    # Modo 1: argumento explícito
+    # project_dir (argv[1] o autodetect)
     if len(argv) >= 2:
         project_root = Path(argv[1]).resolve()
     else:
@@ -638,7 +694,7 @@ def main(argv):
 
     if project_root is None:
         print(
-            "Uso: scripts/prepare_buildable_project.py <project_dir>\n"
+            "Uso: scripts/prepare_buildable_project.py <project_dir> [rebuild1.zip]\n"
             "     (o exporta PROJECT_DIR=<ruta> / ejecuta desde un dir que "
             "contenga app/src/main/AndroidManifest.xml)",
             file=sys.stderr,
@@ -657,7 +713,20 @@ def main(argv):
         )
 
     log.info(f"Project root detectado: {project_root}")
+
+    # Aplicar todas las reparaciones
     apply_fixes(project_root)
+
+    # Ruta del ZIP: argv[2] > env ZIP_OUT > ./rebuild1.zip
+    if len(argv) >= 3:
+        zip_path = Path(argv[2])
+    else:
+        zip_path = Path(os.environ.get("ZIP_OUT", "rebuild1.zip"))
+
+    # Generar el ZIP a partir del contenido del proyecto
+    create_rebuild_zip(project_root, zip_path)
+
+    log.info("EMPAQUETADO COMPLETO")
     return 0
 
 

@@ -14,6 +14,10 @@ android {
         versionCode 1
         versionName "1.0"
         multiDexEnabled true
+
+        vectorDrawables {
+            useSupportLibrary true
+        }
     }
 
     buildTypes {
@@ -56,20 +60,6 @@ android {
     lint {
         abortOnError false
         checkReleaseBuilds false
-    }
-
-    /*
-     * Mantiene los VectorDrawable como XML para evitar que AAPT2
-     * intente convertirlos a PNG durante el build.
-     *
-     * Esto es importante porque el proyecto decompilado contiene
-     * vectores que utilizan referencias como:
-     *
-     * @color/...
-     * ?attr/...
-     */
-    vectorDrawables {
-        useSupportLibrary true
     }
 
     buildFeatures {

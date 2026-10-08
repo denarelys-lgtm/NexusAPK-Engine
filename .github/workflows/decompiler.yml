@@ -444,6 +444,95 @@ jobs:
           ls -lh rebuild1.zip
 
       # ==================================================
+      # 14.5.1 REPARAR BUILD.GRADLE GENERADO POR JADX
+      # ==================================================
+
+      - name: 14.5.1. Reparar build.gradle para Gradle/AGP
+        shell: bash
+        run: |
+          set -e
+
+          echo "=========================================="
+          echo "      REPARANDO BUILD.GRADLE"
+          echo "=========================================="
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          root = Path("output_project")
+          files = list(root.rglob("build.gradle")) + list(root.rglob("build.gradle.kts"))
+
+          print(f"Archivos Gradle encontrados: {len(files)}")
+
+          for path in files:
+              if not path.is_file():
+                  continue
+
+              text = path.read_text(encoding="utf-8", errors="ignore")
+              original = text
+
+              # En Groovy, vectorDrawables pertenece a defaultConfig.
+              # Este bloque detecta un vectorDrawables ubicado directamente
+              # dentro de android { ... } y lo mueve dentro de defaultConfig.
+              pattern = re.compile(
+                  r'(?m)^(?P<indent>[ \t]*)vectorDrawables\s*\{\s*\n'
+                  r'(?P<body>(?:^(?P=indent)[ \t]+.*\n)*)'
+                  r'^(?P=indent)\}\s*\n?'
+              )
+
+              matches = list(pattern.finditer(text))
+              if not matches:
+                  continue
+
+              for m in reversed(matches):
+                  start = m.start()
+                  before = text[:start]
+
+                  # Solo actuar si el bloque está dentro de android y fuera
+                  # de un defaultConfig existente.
+                  android_pos = before.rfind("android {")
+                  default_pos = before.rfind("defaultConfig {")
+
+                  if android_pos == -1 or android_pos < before.rfind("}"):
+                      continue
+
+                  block = m.group(0)
+                  indent = m.group("indent")
+
+                  # Si ya estamos dentro de defaultConfig, no moverlo.
+                  if default_pos > android_pos:
+                      continue
+
+                  inner = block.strip("\n")
+                  moved = (
+                      f"{indent}defaultConfig {{\n"
+                      f"{indent}    " + "\n".join(
+                          (indent + "    " + line.lstrip())
+                          for line in inner.splitlines()
+                      ) + "\n"
+                      f"{indent}}}\n"
+                  )
+
+                  text = text[:start] + moved + text[m.end():]
+
+              if text != original:
+                  path.write_text(text, encoding="utf-8")
+                  print(f"CORREGIDO: {path}")
+
+          print("")
+          print("Verificando vectorDrawables...")
+          for path in root.rglob("build.gradle"):
+              data = path.read_text(encoding="utf-8", errors="ignore")
+              if "vectorDrawables" in data:
+                  print(f"  {path}: vectorDrawables presente")
+          PY
+
+          echo ""
+          echo "Build.gradle reparados:"
+          find output_project -name "build.gradle" -o -name "build.gradle.kts" | sort
+
+      # ==================================================
       # 14.6  SUBIR rebuild1.zip COMO ARTIFACT
       # ==================================================
 

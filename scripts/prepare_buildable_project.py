@@ -175,63 +175,6 @@ def fix_integers(res_dir):
     return n
 
 
-def enable_vector_support(root):
-    """
-    Habilita vectorDrawables.useSupportLibrary=true en el
-    build.gradle generado.
-
-    Esto evita que el proceso de construcción trate los
-    VectorDrawable del proyecto decompilado como simples PNG
-    cuando contienen referencias como:
-
-        @color/...
-        ?attr/...
-
-    que aparecen habitualmente en proyectos decompilados.
-    """
-
-    gradle = root / "app" / "build.gradle"
-
-    if not gradle.exists():
-        return 0
-
-    text = gradle.read_text(encoding="utf-8")
-
-    if "useSupportLibrary true" in text:
-        return 0
-
-    marker = """    buildFeatures {
-        buildConfig true
-    }"""
-
-    if marker not in text:
-        return 0
-
-    replacement = """    vectorDrawables {
-        useSupportLibrary true
-    }
-
-    buildFeatures {
-        buildConfig true
-    }"""
-
-    new_text = text.replace(
-        marker,
-        replacement,
-        1,
-    )
-
-    if new_text == text:
-        return 0
-
-    gradle.write_text(
-        new_text,
-        encoding="utf-8",
-    )
-
-    return 1
-
-
 def fix_hebrew_dir(res_dir):
     """
     Renombra values-iw a values-he.
@@ -270,7 +213,6 @@ def apply_fixes(root):
     print("[*] 9-PATCH:  " + str(remove_9patch(res)))
     print("[*] INTEGERS: " + str(fix_integers(res)))
     print("[*] IW->HE:   " + str(fix_hebrew_dir(res)))
-    print("[*] VECTOR:   " + str(enable_vector_support(root)))
 
 
 def replace_build_files(root):
@@ -586,10 +528,6 @@ def main():
 
     # Después colocamos los Gradle preparados.
     replace_build_files(root)
-
-    # Volvemos a asegurar vectorDrawables después de
-    # reemplazar app/build.gradle por la plantilla.
-    enable_vector_support(root)
 
     # Gradle Wrapper.
     inject_wrapper(root)

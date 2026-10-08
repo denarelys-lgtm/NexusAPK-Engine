@@ -62,41 +62,22 @@ def fix_cdata(res_dir):
 
 def fix_plurals(res_dir):
     """
-    Reconstruye TODOS los <plurals> en una forma mínima y segura para AAPT2.
+    Elimina recursos <plurals> problemáticos de proyectos decompilados.
 
-    AAPT2 puede lanzar NullPointerException en TableExtractor.parsePlural()
-    cuando un <item> contiene XML interno, atributos inesperados o una
-    estructura producida por un decompilador. Por eso los items reconstruidos
-    contienen únicamente:
+    Algunos recursos reconstruidos provocan un NullPointerException interno
+    de AAPT2 en TableExtractor.parsePlural()/flattenXmlSubTree(). En este
+    escenario es preferible eliminar el recurso plural completo antes que
+    bloquear toda la compilación.
 
-        <item quantity="...">texto plano</item>
+    Esta función procesa todos los values*/ XML y:
+      - elimina bloques <plurals> correctamente cerrados;
+      - elimina también un <plurals> que haya quedado sin cierre;
+      - no intenta reinterpretar ni reconstruir el XML interno del plural.
 
-    Se conserva el nombre del recurso y las cantidades válidas. El contenido
-    XML interno se convierte a texto plano para impedir que AAPT2 entre en
-    flattenXmlSubTree().
+    Los demás recursos del archivo se conservan.
     """
 
-    from html import unescape
-    from xml.sax.saxutils import escape
-
     n = 0
-    valid_quantities = {"zero", "one", "two", "few", "many", "other"}
-
-    def plain_text(value):
-        # Elimina CDATA, comentarios y cualquier etiqueta XML interna.
-        value = re.sub(r'<!\[CDATA\[(.*?)\]\]>', r'\1', value,
-                       flags=re.DOTALL | re.IGNORECASE)
-        value = re.sub(r'<!--.*?-->', '', value,
-                       flags=re.DOTALL)
-        value = re.sub(r'<[^>]*>', '', value,
-                       flags=re.DOTALL)
-
-        # Decodifica entidades y vuelve a escaparlas de forma XML segura.
-        # Así evitamos dejar entidades/fragmentos que AAPT2 pueda interpretar
-        # como XML interno.
-        value = unescape(value)
-        value = escape(value, {'"': '&quot;', "'": '&apos;'})
-        return value.strip()
 
     for p in res_dir.glob("values*/*.xml"):
         try:
@@ -104,135 +85,38 @@ def fix_plurals(res_dir):
         except Exception:
             continue
 
-        if not re.search(r'<plurals\b', t, flags=re.IGNORECASE):
+        if not re.search(r"<plurals\b", t, flags=re.IGNORECASE):
             continue
 
-        changed = False
+        new = t
 
-        def rebuild_plural(match):
-            nonlocal changed
-
-            opening = match.group(1)
-            body = match.group(2)
-
-            name_match = re.search(
-                r'\bname\s*=\s*(["\'])(.*?)\1',
-                opening,
-                flags=re.IGNORECASE | re.DOTALL,
-            )
-
-            if not name_match:
-                changed = True
-                return ""
-
-            name = name_match.group(2).strip()
-            if not name:
-                changed = True
-                return ""
-
-            items = []
-            seen = set()
-
-            # Solo aceptamos items que tengan quantity explícito.
-            for im in re.finditer(
-                r'<item\b([^>]*)>(.*?)</item\s*>',
-                body,
-                flags=re.IGNORECASE | re.DOTALL,
-            ):
-                attrs = im.group(1)
-                value = im.group(2)
-
-                qm = re.search(
-                    r'\bquantity\s*=\s*(["\'])(.*?)\1',
-                    attrs,
-                    flags=re.IGNORECASE | re.DOTALL,
-                )
-
-                if not qm:
-                    changed = True
-                    continue
-
-                quantity = qm.group(2).strip().lower()
-                if quantity not in valid_quantities:
-                    changed = True
-                    continue
-
-                if quantity in seen:
-                    changed = True
-                    continue
-
-                seen.add(quantity)
-                items.append((quantity, plain_text(value)))
-
-            # Items autocerrados también se normalizan.
-            for im in re.finditer(
-                r'<item\b([^>]*)/\s*>',
-                body,
-                flags=re.IGNORECASE | re.DOTALL,
-            ):
-                attrs = im.group(1)
-
-                qm = re.search(
-                    r'\bquantity\s*=\s*(["\'])(.*?)\1',
-                    attrs,
-                    flags=re.IGNORECASE | re.DOTALL,
-                )
-
-                if not qm:
-                    changed = True
-                    continue
-
-                quantity = qm.group(2).strip().lower()
-                if quantity not in valid_quantities or quantity in seen:
-                    changed = True
-                    continue
-
-                seen.add(quantity)
-                items.append((quantity, ""))
-
-            if not items:
-                changed = True
-                return ""
-
-            result = ['<plurals name="' + escape(name, {'"': '&quot;'}) + '">']
-            for quantity, value in items:
-                result.append(
-                    '    <item quantity="' + quantity + '">' +
-                    value +
-                    '</item>'
-                )
-            result.append('</plurals>')
-
-            rebuilt = "\n".join(result)
-            if rebuilt != match.group(0):
-                changed = True
-            return rebuilt
-
+        # Primero elimina bloques completos y correctamente cerrados.
+        # DOTALL permite abarcar saltos de línea y cualquier contenido interno.
         new = re.sub(
-            r'<plurals\b([^>]*)>(.*?)</plurals\s*>',
-            rebuild_plural,
-            t,
+            r"<plurals\b[^>]*>.*?</plurals\s*>",
+            "",
+            new,
             flags=re.IGNORECASE | re.DOTALL,
         )
 
-        # Cualquier plurals mal cerrado que haya sobrevivido se elimina.
-        if re.search(r'<plurals\b', new, flags=re.IGNORECASE):
-            open_count = len(re.findall(r'<plurals\b', new, flags=re.IGNORECASE))
-            close_count = len(re.findall(r'</plurals\s*>', new, flags=re.IGNORECASE))
-            if open_count != close_count:
-                new = re.sub(
-                    r'<plurals\b[^>]*>.*?(?=</resources\s*>)',
-                    '',
-                    new,
-                    flags=re.IGNORECASE | re.DOTALL,
-                )
-                changed = True
+        # Si quedó un <plurals> abierto/malformado, elimina desde él hasta
+        # el cierre de <resources>. Esto evita que AAPT2 vuelva a intentar
+        # parsear la estructura dañada.
+        if re.search(r"<plurals\b", new, flags=re.IGNORECASE):
+            new = re.sub(
+                r"<plurals\b[^>]*>.*?(?=</resources\s*>)",
+                "",
+                new,
+                flags=re.IGNORECASE | re.DOTALL,
+            )
 
-        if changed and new != t:
+        if new != t:
             p.write_text(new, encoding="utf-8")
             n += 1
+            print("[PLURALS] Eliminados de: " + str(p.relative_to(res_dir)))
 
     return n
+
 
 def remove_9patch(res_dir):
     """

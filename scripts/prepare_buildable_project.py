@@ -1,25 +1,5 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""
-NexusAPK-Engine — scripts/prepare_buildable_project.py
-
-Prepara un proyecto Android decompilado (JADX + Apktool) para recompilarlo
-con Gradle 8.13 + AGP + AAPT2 sobre Java 17 / SDK 34.
-
-Reparaciones aplicadas:
-  * remove_9patch   : renombra .9.png inválidos a .png
-  * fix_plurals     : normaliza <plurals> para que AAPT2 no reviente con
-                      TableExtractor.parsePlural() NullPointerException
-  * fix_cdata       : convierte CDATA problemática en texto escapado
-  * fix_integers    : normaliza <integer> mal tipados
-  * fix_hebrew      : ajustes de RTL en values-iw / values-he
-  * fix_manifest    : normaliza AndroidManifest.xml
-  * replace_gradle_files / replace_wrapper : plantillas propias
-
-Uso:
-    python3 scripts/prepare_buildable_project.py <project_dir>
-"""
-
 from __future__ import annotations
 
 import os
@@ -600,14 +580,83 @@ def apply_fixes(project_root: Path) -> None:
     audit_plurals(res_root)
 
 
+def _autodetect_project_root() -> Path | None:
+    """
+    Cuando no se pasa argumento, intenta localizar el proyecto decompilado.
+
+    Orden de búsqueda:
+      1. Variable de entorno PROJECT_DIR
+      2. Directorio actual si ya contiene app/src/main/AndroidManifest.xml
+      3. Subdirectorios típicos: project/, build_project/, decompiled/,
+         output/, out/, apk_project/, app_decompiled/
+      4. Cualquier subdirectorio de primer nivel que contenga
+         app/src/main/AndroidManifest.xml
+
+    Devuelve None si no encuentra nada plausible.
+    """
+    env = os.environ.get("PROJECT_DIR")
+    if env:
+        p = Path(env).resolve()
+        if p.is_dir():
+            return p
+
+    cwd = Path.cwd()
+
+    # 2. cwd ya es un proyecto Android
+    if (cwd / "app/src/main/AndroidManifest.xml").is_file():
+        return cwd
+
+    # 3. nombres típicos
+    candidates = [
+        "project", "build_project", "decompiled", "output", "out",
+        "apk_project", "app_decompiled", "rebuilt", "rebuilt_project",
+    ]
+    for name in candidates:
+        p = cwd / name
+        if (p / "app/src/main/AndroidManifest.xml").is_file():
+            return p.resolve()
+
+    # 4. barrido de primer nivel
+    try:
+        for p in sorted(cwd.iterdir()):
+            if not p.is_dir():
+                continue
+            if (p / "app/src/main/AndroidManifest.xml").is_file():
+                return p.resolve()
+    except Exception:
+        pass
+
+    return None
+
+
 def main(argv):
-    if len(argv) != 2:
-        print(f"Uso: {argv[0]} <project_dir>", file=sys.stderr)
+    # Modo 1: argumento explícito
+    if len(argv) >= 2:
+        project_root = Path(argv[1]).resolve()
+    else:
+        project_root = _autodetect_project_root()
+
+    if project_root is None:
+        print(
+            "Uso: scripts/prepare_buildable_project.py <project_dir>\n"
+            "     (o exporta PROJECT_DIR=<ruta> / ejecuta desde un dir que "
+            "contenga app/src/main/AndroidManifest.xml)",
+            file=sys.stderr,
+        )
         return 2
-    project_root = Path(argv[1]).resolve()
+
     if not project_root.is_dir():
         print(f"No es un directorio: {project_root}", file=sys.stderr)
         return 2
+
+    if not (project_root / "app/src/main/AndroidManifest.xml").is_file():
+        print(
+            f"Advertencia: {project_root} no contiene "
+            f"app/src/main/AndroidManifest.xml — se continuará de todas formas",
+            file=sys.stderr,
+        )
+
+    log.info(f"Project root detectado: {project_root}")
     apply_fixes(project_root)
     return 0
 

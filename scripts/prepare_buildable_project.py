@@ -120,16 +120,47 @@ def fix_plurals(res_dir):
 
 def remove_9patch(res_dir):
     """
-    Elimina 9-patch de librerías conocidas que suelen causar
-    errores durante la reconstrucción de proyectos decompilados.
+    Convierte los Nine-Patch problemáticos en PNG normales.
+
+    Los proyectos decompilados pueden contener archivos *.9.png que
+    AAPT2 no puede reconstruir porque sus marcas Nine-Patch son inválidas.
+    Para mantener el recurso disponible y evitar que AAPT2 intente
+    interpretarlo como Nine-Patch, se elimina únicamente la extensión
+    ".9" del nombre.
+
+    Si ya existe un PNG con el mismo nombre, se elimina el Nine-Patch
+    problemático para evitar dos recursos con el mismo identificador.
     """
 
     n = 0
 
     for p in res_dir.rglob("*.9.png"):
-        if any(p.name.startswith(x) for x in LIBRARY_9PATCH_PREFIXES):
-            p.unlink()
+        normal = p.with_name(p.name[:-7] + ".png")
+
+        try:
+            if normal.exists():
+                p.unlink()
+                n += 1
+                print(
+                    "[9-PATCH] Eliminado por conflicto: "
+                    + str(p.relative_to(res_dir))
+                )
+                continue
+
+            p.rename(normal)
             n += 1
+            print(
+                "[9-PATCH] Convertido a PNG normal: "
+                + str(normal.relative_to(res_dir))
+            )
+
+        except Exception as e:
+            print(
+                "[!] No se pudo procesar 9-patch "
+                + str(p)
+                + ": "
+                + str(e)
+            )
 
     return n
 
@@ -550,3 +581,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+    

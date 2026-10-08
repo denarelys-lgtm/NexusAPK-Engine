@@ -4,6 +4,10 @@ import os
 import re
 import shutil
 import zipfile
+import urllib.request
+import urllib.parse
+import xml.etree.ElementTree as ET
+import tempfile
 from pathlib import Path
 
 
@@ -26,6 +30,161 @@ LIBRARY_9PATCH_PREFIXES = (
     "material_",
     "np_",
 )
+
+
+# Dependencias AndroidX/Material que se inyectan en templates/app.build.gradle.
+# Sus recursos también pueden venir ya dentro del APK decompilado. Antes de
+# compilar, recopilamos los nombres de recursos publicados por esas AAR y
+# eliminamos únicamente las definiciones con el mismo nombre del proyecto.
+LIBRARY_COORDINATES = (
+    ("androidx.appcompat", "appcompat", "1.7.0"),
+    ("androidx.core", "core-ktx", "1.13.1"),
+    ("androidx.constraintlayout", "constraintlayout", "2.1.4"),
+    ("com.google.android.material", "material", "1.12.0"),
+    ("androidx.multidex", "multidex", "2.0.1"),
+)
+MAVEN_BASES = (
+    "https://dl.google.com/dl/android/maven2",
+    "https://repo1.maven.org/maven2",
+)
+
+
+def _maven_get(group, artifact, version, ext):
+    rel = "/".join(group.split(".")) + f"/{artifact}/{version}/{artifact}-{version}.{ext}"
+    for base in MAVEN_BASES:
+        try:
+            with urllib.request.urlopen(base + "/" + rel, timeout=20) as r:
+                return r.read()
+        except Exception:
+            continue
+    return None
+
+
+def _xml_resource_names(xml_bytes):
+    """Extrae nombres de recursos definidos por una AAR values XML."""
+    names = set()
+    try:
+        root = ET.fromstring(xml_bytes)
+    except Exception:
+        return names
+    for child in root:
+        tag = child.tag.rsplit("}", 1)[-1]
+        if tag in {"eat-comment", "skip"}:
+            continue
+        name = child.attrib.get("name")
+        if name:
+            names.add((tag, name))
+    return names
+
+
+def _resource_names_from_aar(data):
+    names = set()
+    if not data:
+        return names
+    try:
+        from io import BytesIO
+        with zipfile.ZipFile(BytesIO(data)) as z:
+            for name in z.namelist():
+                if name.startswith("res/values") and name.endswith(".xml"):
+                    try:
+                        names.update(_xml_resource_names(z.read(name)))
+                    except Exception:
+                        pass
+    except Exception:
+        pass
+    return names
+
+
+def collect_library_resource_names():
+    """Descarga las AAR directas y reúne sus recursos publicados.
+
+    No falla el build si una descarga no está disponible; las correcciones
+    restantes siguen ejecutándose. Los recursos propios de la app no se tocan
+    salvo cuando existe una coincidencia exacta con una librería conocida.
+    """
+    all_names = set()
+    for group, artifact, version in LIBRARY_COORDINATES:
+        print(f"[*] Recursos de librería: {group}:{artifact}:{version}")
+        data = _maven_get(group, artifact, version, "aar")
+        if data:
+            found = _resource_names_from_aar(data)
+            all_names.update(found)
+            print(f"    -> {len(found)} recursos publicados")
+        else:
+            print("    -> no disponible; se conserva el proyecto")
+    return all_names
+
+
+def dedupe_library_values(res_dir, library_names):
+    """Elimina de values XML solo recursos que también publica una AAR.
+
+    Se conserva la primera definición si el mismo recurso aparece varias veces
+    dentro del propio proyecto; únicamente se eliminan definiciones cuyo
+    nombre coincide con un recurso de las librerías inyectadas.
+    """
+    if not library_names:
+        return 0
+
+    n = 0
+    value_dirs = list(res_dir.glob("values*"))
+    # Algunos recursos se repiten en varios values-<config>; solo quitamos los
+    # recursos sin configuración específica. Las variantes siguen siendo útiles.
+    resource_tags = {
+        "attr", "declare-styleable", "style", "color", "dimen", "string",
+        "bool", "integer", "drawable", "mipmap", "fraction", "plurals",
+        "array", "string-array", "integer-array", "styleable",
+    }
+
+    for d in value_dirs:
+        for p in d.glob("*.xml"):
+            try:
+                text = p.read_text(encoding="utf-8")
+            except Exception:
+                continue
+
+            if not text.lstrip().startswith("<?xml") and "<resources" not in text:
+                continue
+
+            changed = False
+
+            def remove_resource(m):
+                nonlocal changed
+                tag = m.group("tag")
+                attrs = m.group("attrs")
+                name_m = re.search(r'\bname\s*=\s*(["\'])(.*?)\1', attrs,
+                                   flags=re.DOTALL)
+                if not name_m:
+                    return m.group(0)
+                name = name_m.group(2)
+                if tag in resource_tags and (tag, name) in library_names:
+                    changed = True
+                    return ""
+                return m.group(0)
+
+            # Elementos normales con contenido. declare-styleable puede
+            # contener <attr>; al quitar el contenedor completo se evita dejar
+            # un styleable huérfano.
+            pattern = re.compile(
+                r'<(?P<tag>attr|declare-styleable|style|color|dimen|string|bool|integer|drawable|mipmap|fraction|plurals|array|string-array|integer-array)\b'
+                r'(?P<attrs>[^>]*)>(?P<body>.*?)</(?P=tag)\s*>',
+                flags=re.IGNORECASE | re.DOTALL,
+            )
+            text2 = pattern.sub(remove_resource, text)
+
+            # Elementos autocerrados.
+            pattern_self = re.compile(
+                r'<(?P<tag>attr|declare-styleable|style|color|dimen|string|bool|integer|drawable|mipmap|fraction|plurals|array|string-array|integer-array)\b'
+                r'(?P<attrs>[^>]*)/\s*>',
+                flags=re.IGNORECASE | re.DOTALL,
+            )
+            text2 = pattern_self.sub(remove_resource, text2)
+
+            if changed:
+                p.write_text(text2, encoding="utf-8")
+                n += 1
+                print(f"[LIB-DEDUP] {p.relative_to(res_dir)}")
+
+    return n
 
 
 def fix_cdata(res_dir):
@@ -62,22 +221,41 @@ def fix_cdata(res_dir):
 
 def fix_plurals(res_dir):
     """
-    Elimina recursos <plurals> problemáticos de proyectos decompilados.
+    Reconstruye TODOS los <plurals> en una forma mínima y segura para AAPT2.
 
-    Algunos recursos reconstruidos provocan un NullPointerException interno
-    de AAPT2 en TableExtractor.parsePlural()/flattenXmlSubTree(). En este
-    escenario es preferible eliminar el recurso plural completo antes que
-    bloquear toda la compilación.
+    AAPT2 puede lanzar NullPointerException en TableExtractor.parsePlural()
+    cuando un <item> contiene XML interno, atributos inesperados o una
+    estructura producida por un decompilador. Por eso los items reconstruidos
+    contienen únicamente:
 
-    Esta función procesa todos los values*/ XML y:
-      - elimina bloques <plurals> correctamente cerrados;
-      - elimina también un <plurals> que haya quedado sin cierre;
-      - no intenta reinterpretar ni reconstruir el XML interno del plural.
+        <item quantity="...">texto plano</item>
 
-    Los demás recursos del archivo se conservan.
+    Se conserva el nombre del recurso y las cantidades válidas. El contenido
+    XML interno se convierte a texto plano para impedir que AAPT2 entre en
+    flattenXmlSubTree().
     """
 
+    from html import unescape
+    from xml.sax.saxutils import escape
+
     n = 0
+    valid_quantities = {"zero", "one", "two", "few", "many", "other"}
+
+    def plain_text(value):
+        # Elimina CDATA, comentarios y cualquier etiqueta XML interna.
+        value = re.sub(r'<!\[CDATA\[(.*?)\]\]>', r'\1', value,
+                       flags=re.DOTALL | re.IGNORECASE)
+        value = re.sub(r'<!--.*?-->', '', value,
+                       flags=re.DOTALL)
+        value = re.sub(r'<[^>]*>', '', value,
+                       flags=re.DOTALL)
+
+        # Decodifica entidades y vuelve a escaparlas de forma XML segura.
+        # Así evitamos dejar entidades/fragmentos que AAPT2 pueda interpretar
+        # como XML interno.
+        value = unescape(value)
+        value = escape(value, {'"': '&quot;', "'": '&apos;'})
+        return value.strip()
 
     for p in res_dir.glob("values*/*.xml"):
         try:
@@ -85,38 +263,135 @@ def fix_plurals(res_dir):
         except Exception:
             continue
 
-        if not re.search(r"<plurals\b", t, flags=re.IGNORECASE):
+        if not re.search(r'<plurals\b', t, flags=re.IGNORECASE):
             continue
 
-        new = t
+        changed = False
 
-        # Primero elimina bloques completos y correctamente cerrados.
-        # DOTALL permite abarcar saltos de línea y cualquier contenido interno.
-        new = re.sub(
-            r"<plurals\b[^>]*>.*?</plurals\s*>",
-            "",
-            new,
-            flags=re.IGNORECASE | re.DOTALL,
-        )
+        def rebuild_plural(match):
+            nonlocal changed
 
-        # Si quedó un <plurals> abierto/malformado, elimina desde él hasta
-        # el cierre de <resources>. Esto evita que AAPT2 vuelva a intentar
-        # parsear la estructura dañada.
-        if re.search(r"<plurals\b", new, flags=re.IGNORECASE):
-            new = re.sub(
-                r"<plurals\b[^>]*>.*?(?=</resources\s*>)",
-                "",
-                new,
+            opening = match.group(1)
+            body = match.group(2)
+
+            name_match = re.search(
+                r'\bname\s*=\s*(["\'])(.*?)\1',
+                opening,
                 flags=re.IGNORECASE | re.DOTALL,
             )
 
-        if new != t:
+            if not name_match:
+                changed = True
+                return ""
+
+            name = name_match.group(2).strip()
+            if not name:
+                changed = True
+                return ""
+
+            items = []
+            seen = set()
+
+            # Solo aceptamos items que tengan quantity explícito.
+            for im in re.finditer(
+                r'<item\b([^>]*)>(.*?)</item\s*>',
+                body,
+                flags=re.IGNORECASE | re.DOTALL,
+            ):
+                attrs = im.group(1)
+                value = im.group(2)
+
+                qm = re.search(
+                    r'\bquantity\s*=\s*(["\'])(.*?)\1',
+                    attrs,
+                    flags=re.IGNORECASE | re.DOTALL,
+                )
+
+                if not qm:
+                    changed = True
+                    continue
+
+                quantity = qm.group(2).strip().lower()
+                if quantity not in valid_quantities:
+                    changed = True
+                    continue
+
+                if quantity in seen:
+                    changed = True
+                    continue
+
+                seen.add(quantity)
+                items.append((quantity, plain_text(value)))
+
+            # Items autocerrados también se normalizan.
+            for im in re.finditer(
+                r'<item\b([^>]*)/\s*>',
+                body,
+                flags=re.IGNORECASE | re.DOTALL,
+            ):
+                attrs = im.group(1)
+
+                qm = re.search(
+                    r'\bquantity\s*=\s*(["\'])(.*?)\1',
+                    attrs,
+                    flags=re.IGNORECASE | re.DOTALL,
+                )
+
+                if not qm:
+                    changed = True
+                    continue
+
+                quantity = qm.group(2).strip().lower()
+                if quantity not in valid_quantities or quantity in seen:
+                    changed = True
+                    continue
+
+                seen.add(quantity)
+                items.append((quantity, ""))
+
+            if not items:
+                changed = True
+                return ""
+
+            result = ['<plurals name="' + escape(name, {'"': '&quot;'}) + '">']
+            for quantity, value in items:
+                result.append(
+                    '    <item quantity="' + quantity + '">' +
+                    value +
+                    '</item>'
+                )
+            result.append('</plurals>')
+
+            rebuilt = "\n".join(result)
+            if rebuilt != match.group(0):
+                changed = True
+            return rebuilt
+
+        new = re.sub(
+            r'<plurals\b([^>]*)>(.*?)</plurals\s*>',
+            rebuild_plural,
+            t,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+
+        # Cualquier plurals mal cerrado que haya sobrevivido se elimina.
+        if re.search(r'<plurals\b', new, flags=re.IGNORECASE):
+            open_count = len(re.findall(r'<plurals\b', new, flags=re.IGNORECASE))
+            close_count = len(re.findall(r'</plurals\s*>', new, flags=re.IGNORECASE))
+            if open_count != close_count:
+                new = re.sub(
+                    r'<plurals\b[^>]*>.*?(?=</resources\s*>)',
+                    '',
+                    new,
+                    flags=re.IGNORECASE | re.DOTALL,
+                )
+                changed = True
+
+        if changed and new != t:
             p.write_text(new, encoding="utf-8")
             n += 1
-            print("[PLURALS] Eliminados de: " + str(p.relative_to(res_dir)))
 
     return n
-
 
 def remove_9patch(res_dir):
     """
@@ -244,6 +519,12 @@ def apply_fixes(root):
     print("[*] 9-PATCH:  " + str(remove_9patch(res)))
     print("[*] INTEGERS: " + str(fix_integers(res)))
     print("[*] IW->HE:   " + str(fix_hebrew_dir(res)))
+
+    # Las dependencias AndroidX/Material también pueden estar incluidas en
+    # los recursos extraídos del APK. Quitamos solo las definiciones que las
+    # mismas AAR vuelven a proporcionar durante el merge de Gradle.
+    library_names = collect_library_resource_names()
+    print("[*] LIB-DEDUP: " + str(dedupe_library_values(res, library_names)))
 
 
 def replace_build_files(root):

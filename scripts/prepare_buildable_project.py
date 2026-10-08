@@ -1,83 +1,146 @@
 #!/usr/bin/env python3
+
 import os
 import re
 import shutil
 import zipfile
 from pathlib import Path
 
+
 SOURCE_DIR = Path("output_project")
 TEMPLATES = Path("templates")
 OUTPUT_ZIP = Path("rebuild1.zip")
 STAGING = Path("_buildable_staging")
 
+
 LIBRARY_9PATCH_PREFIXES = (
-    "abc_", "notification_", "common_", "design_", "mtrl_",
-    "tooltip_", "preference_", "m3_", "avd_", "material_", "np_",
+    "abc_",
+    "notification_",
+    "common_",
+    "design_",
+    "mtrl_",
+    "tooltip_",
+    "preference_",
+    "m3_",
+    "avd_",
+    "material_",
+    "np_",
 )
 
 
 def fix_cdata(res_dir):
+    """
+    Corrige valores XML que contienen un cierre CDATA inválido (]]>).
+    """
+
     n = 0
+
     for p in res_dir.glob("values*/*.xml"):
         try:
             t = p.read_text(encoding="utf-8")
         except Exception:
             continue
+
         if "]]>" not in t:
             continue
+
         if "<![CDATA[" not in t:
             new = t.replace("]]>", "")
         else:
             new = re.sub(
                 r"\]\]>(</(?:item|string|plurals|array|string-array|integer-array)>)",
-                r"\1", t,
+                r"\1",
+                t,
             )
+
         if new != t:
             p.write_text(new, encoding="utf-8")
             n += 1
+
     return n
 
 
 def fix_plurals(res_dir):
+    """
+    Corrige recursos <plurals> que tengan <item> sin quantity.
+    """
+
     n = 0
+
     for p in res_dir.glob("values*/*.xml"):
         try:
             t = p.read_text(encoding="utf-8")
         except Exception:
             continue
+
         if "<plurals" not in t:
             continue
 
         def blk(m):
             def it(im):
                 s = im.group(0)
+
                 if re.search(r"\bquantity\s*=", s):
                     return s
-                return re.sub(r"<item\b", '<item quantity="other"', s, count=1)
-            return re.sub(r"<item\b[^>]*?/?>", it, m.group(0))
 
-        new = re.sub(r"<plurals\b[^>]*>.*?</plurals>", blk, t, flags=re.DOTALL)
+                return re.sub(
+                    r"<item\b",
+                    '<item quantity="other"',
+                    s,
+                    count=1,
+                )
+
+            return re.sub(
+                r"<item\b[^>]*?/?>",
+                it,
+                m.group(0),
+            )
+
+        new = re.sub(
+            r"<plurals\b[^>]*>.*?</plurals>",
+            blk,
+            t,
+            flags=re.DOTALL,
+        )
+
+        # Elimina plurals sin atributo name.
         new = re.sub(
             r"<plurals\b(?![^>]*\bname\s*=)[^>]*>.*?</plurals>\s*",
-            "", new, flags=re.DOTALL,
+            "",
+            new,
+            flags=re.DOTALL,
         )
+
         if new != t:
             p.write_text(new, encoding="utf-8")
             n += 1
+
     return n
 
 
 def remove_9patch(res_dir):
+    """
+    Elimina 9-patch de librerías conocidas que suelen causar
+    errores durante la reconstrucción de proyectos decompilados.
+    """
+
     n = 0
+
     for p in res_dir.rglob("*.9.png"):
         if any(p.name.startswith(x) for x in LIBRARY_9PATCH_PREFIXES):
             p.unlink()
             n += 1
+
     return n
 
 
 def fix_integers(res_dir):
+    """
+    Corrige recursos integers.xml con valores que no son enteros válidos.
+    """
+
     n = 0
+
     for p in res_dir.rglob("integers.xml"):
         try:
             t = p.read_text(encoding="utf-8")
@@ -87,95 +150,266 @@ def fix_integers(res_dir):
         def san(m):
             name = m.group(1)
             raw = m.group(2).strip()
+
             try:
                 if raw.lower().startswith("0x"):
                     int(raw, 16)
                 else:
                     int(raw)
+
                 return m.group(0)
+
             except ValueError:
                 return '<integer name="' + name + '">0</integer>'
 
-        new = re.sub(r'<integer\s+name="([^"]+)">\s*([^<]*?)\s*</integer>', san, t)
+        new = re.sub(
+            r'<integer\s+name="([^"]+)">\s*([^<]*?)\s*</integer>',
+            san,
+            t,
+        )
+
         if new != t:
             p.write_text(new, encoding="utf-8")
             n += 1
+
     return n
 
 
+def enable_vector_support(root):
+    """
+    Habilita vectorDrawables.useSupportLibrary=true en el
+    build.gradle generado.
+
+    Esto evita que el proceso de construcción trate los
+    VectorDrawable del proyecto decompilado como simples PNG
+    cuando contienen referencias como:
+
+        @color/...
+        ?attr/...
+
+    que aparecen habitualmente en proyectos decompilados.
+    """
+
+    gradle = root / "app" / "build.gradle"
+
+    if not gradle.exists():
+        return 0
+
+    text = gradle.read_text(encoding="utf-8")
+
+    if "useSupportLibrary true" in text:
+        return 0
+
+    marker = """    buildFeatures {
+        buildConfig true
+    }"""
+
+    if marker not in text:
+        return 0
+
+    replacement = """    vectorDrawables {
+        useSupportLibrary true
+    }
+
+    buildFeatures {
+        buildConfig true
+    }"""
+
+    new_text = text.replace(
+        marker,
+        replacement,
+        1,
+    )
+
+    if new_text == text:
+        return 0
+
+    gradle.write_text(
+        new_text,
+        encoding="utf-8",
+    )
+
+    return 1
+
+
 def fix_hebrew_dir(res_dir):
-    """Renombra values-iw a values-he (iw deprecado en AAPT2)."""
+    """
+    Renombra values-iw a values-he.
+
+    'iw' es el código antiguo para hebreo y AAPT2 puede
+    presentar problemas con esa carpeta en determinados proyectos.
+    """
+
     n = 0
+
     for p in res_dir.glob("values-iw"):
         if p.is_dir():
             target = p.parent / "values-he"
+
             if not target.exists():
                 p.rename(target)
                 n += 1
+
     return n
 
 
 def apply_fixes(root):
+    """
+    Ejecuta todas las correcciones sobre los recursos del proyecto.
+    """
+
     res = root / "app" / "src" / "main" / "res"
+
     if not res.is_dir():
+        print("[!] No existe la carpeta de recursos:")
+        print("    " + str(res))
         return
+
     print("[*] CDATA:    " + str(fix_cdata(res)))
     print("[*] PLURALS:  " + str(fix_plurals(res)))
     print("[*] 9-PATCH:  " + str(remove_9patch(res)))
     print("[*] INTEGERS: " + str(fix_integers(res)))
     print("[*] IW->HE:   " + str(fix_hebrew_dir(res)))
+    print("[*] VECTOR:   " + str(enable_vector_support(root)))
 
 
 def replace_build_files(root):
+    """
+    Reemplaza los archivos Gradle principales por las plantillas
+    preparadas para el proyecto reconstruido.
+    """
+
     pairs = [
         ("settings.gradle", root / "settings.gradle"),
         ("build.gradle", root / "build.gradle"),
         ("app.build.gradle", root / "app" / "build.gradle"),
     ]
+
     for tpl, dest in pairs:
         src = TEMPLATES / tpl
+
         if not src.exists():
             continue
+
         if dest.exists():
-            shutil.move(str(dest), str(dest) + ".jadx")
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(src, dest)
-        print("    " + str(dest.relative_to(root)))
+            shutil.move(
+                str(dest),
+                str(dest) + ".jadx",
+            )
+
+        dest.parent.mkdir(
+            parents=True,
+            exist_ok=True,
+        )
+
+        shutil.copy2(
+            src,
+            dest,
+        )
+
+        print(
+            "    "
+            + str(dest.relative_to(root))
+        )
 
 
 def inject_wrapper(root):
+    """
+    Inyecta el Gradle Wrapper preparado por el proyecto.
+    """
+
     src = TEMPLATES / "gradle" / "wrapper"
     dst = root / "gradle" / "wrapper"
-    dst.mkdir(parents=True, exist_ok=True)
-    for f in ("gradle-wrapper.jar", "gradle-wrapper.properties"):
+
+    dst.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    for f in (
+        "gradle-wrapper.jar",
+        "gradle-wrapper.properties",
+    ):
         if (src / f).exists():
-            shutil.copy2(src / f, dst / f)
-    for f in ("gradlew", "gradlew.bat"):
+            shutil.copy2(
+                src / f,
+                dst / f,
+            )
+
+    for f in (
+        "gradlew",
+        "gradlew.bat",
+    ):
         if (TEMPLATES / f).exists():
-            shutil.copy2(TEMPLATES / f, root / f)
+            shutil.copy2(
+                TEMPLATES / f,
+                root / f,
+            )
+
             if f == "gradlew":
-                os.chmod(root / f, 0o755)
+                os.chmod(
+                    root / f,
+                    0o755,
+                )
+
     print("[*] Wrapper inyectado")
 
 
 def sanitize_manifest(root):
-    m = root / "app" / "src" / "main" / "AndroidManifest.xml"
+    """
+    Elimina el atributo package antiguo del AndroidManifest.
+    """
+
+    m = (
+        root
+        / "app"
+        / "src"
+        / "main"
+        / "AndroidManifest.xml"
+    )
+
     if not m.exists():
         return
-    t = m.read_text(encoding="utf-8")
-    new = re.sub(r'\s+package="[^"]*"', "", t, count=1)
+
+    t = m.read_text(
+        encoding="utf-8"
+    )
+
+    new = re.sub(
+        r'\s+package="[^"]*"',
+        "",
+        t,
+        count=1,
+    )
+
     if new != t:
-        m.write_text(new, encoding="utf-8")
-        print("    Manifest saneado")
+        m.write_text(
+            new,
+            encoding="utf-8",
+        )
+
+        print(
+            "    Manifest saneado"
+        )
 
 
-GITIGNORE = ".gradle/\nbuild/\n!gradle/wrapper/gradle-wrapper.jar\nlocal.properties\n*.apk\n.idea/\n*.iml\n"
+GITIGNORE = (
+    ".gradle/\n"
+    "build/\n"
+    "!gradle/wrapper/gradle-wrapper.jar\n"
+    "local.properties\n"
+    "*.apk\n"
+    ".idea/\n"
+    "*.iml\n"
+)
+
 
 README = (
     "# rebuild1\n\n"
     "Proyecto Android autocontenido.\n"
     "Sube este repo a GitHub para compilarlo automaticamente.\n"
 )
+
 
 GRADLE_PROP = (
     "org.gradle.jvmargs=-Xmx4096m\n"
@@ -186,68 +420,194 @@ GRADLE_PROP = (
 
 
 def inject_project_files(root):
-    wf = root / ".github" / "workflows"
-    wf.mkdir(parents=True, exist_ok=True)
+    """
+    Inyecta archivos auxiliares del proyecto.
+    """
+
+    wf = (
+        root
+        / ".github"
+        / "workflows"
+    )
+
+    wf.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
     if (TEMPLATES / "build.yml").exists():
-        shutil.copy2(TEMPLATES / "build.yml", wf / "build.yml")
-    (root / ".gitignore").write_text(GITIGNORE, encoding="utf-8")
-    (root / "README.md").write_text(README, encoding="utf-8")
+        shutil.copy2(
+            TEMPLATES / "build.yml",
+            wf / "build.yml",
+        )
+
+    (root / ".gitignore").write_text(
+        GITIGNORE,
+        encoding="utf-8",
+    )
+
+    (root / "README.md").write_text(
+        README,
+        encoding="utf-8",
+    )
+
     if not (root / "gradle.properties").exists():
-        (root / "gradle.properties").write_text(GRADLE_PROP, encoding="utf-8")
-    print("[*] Archivos de proyecto inyectados")
+        (root / "gradle.properties").write_text(
+            GRADLE_PROP,
+            encoding="utf-8",
+        )
+
+    print(
+        "[*] Archivos de proyecto inyectados"
+    )
 
 
 def find_root():
+    """
+    Busca la raíz del proyecto Android generado.
+    """
+
     for p in SOURCE_DIR.rglob("settings.gradle"):
         return p.parent
+
     for p in SOURCE_DIR.rglob("settings.gradle.kts"):
         return p.parent
-    raise RuntimeError("settings.gradle no encontrado")
+
+    raise RuntimeError(
+        "settings.gradle no encontrado"
+    )
 
 
 def stage(root):
+    """
+    Copia el proyecto a una carpeta temporal para generar el ZIP.
+    """
+
     if STAGING.exists():
         shutil.rmtree(STAGING)
+
     STAGING.mkdir()
+
     IGN = shutil.ignore_patterns(
-        ".gradle", "build", "*.iml", ".idea",
-        "local.properties", "*.apk", "*.jadx",
+        ".gradle",
+        "build",
+        "*.iml",
+        ".idea",
+        "local.properties",
+        "*.apk",
+        "*.jadx",
     )
+
     for item in root.iterdir():
         dest = STAGING / item.name
+
         if item.is_dir():
-            shutil.copytree(item, dest, ignore=IGN)
+            shutil.copytree(
+                item,
+                dest,
+                ignore=IGN,
+            )
+
         else:
-            shutil.copy2(item, dest)
+            shutil.copy2(
+                item,
+                dest,
+            )
+
     return STAGING
 
 
 def zip_it(staging, out):
+    """
+    Genera el ZIP final del proyecto.
+    """
+
     if out.exists():
         out.unlink()
-    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
+
+    with zipfile.ZipFile(
+        out,
+        "w",
+        zipfile.ZIP_DEFLATED,
+    ) as z:
+
         for root, dirs, files in os.walk(staging):
-            dirs[:] = [d for d in dirs if d not in (".git", ".gradle", "build")]
+
+            dirs[:] = [
+                d
+                for d in dirs
+                if d not in (
+                    ".git",
+                    ".gradle",
+                    "build",
+                )
+            ]
+
             for f in files:
                 full = Path(root) / f
-                z.write(full, full.relative_to(staging))
+
+                z.write(
+                    full,
+                    full.relative_to(staging),
+                )
+
     size = out.stat().st_size / 1024
-    print("[*] " + str(out) + ": " + str(round(size, 1)) + " KB")
+
+    print(
+        "[*] "
+        + str(out)
+        + ": "
+        + str(round(size, 1))
+        + " KB"
+    )
 
 
 def main():
+    """
+    Punto de entrada principal.
+    """
+
     if not SOURCE_DIR.exists():
-        raise SystemExit("output_project/ no existe")
+        raise SystemExit(
+            "output_project/ no existe"
+        )
+
     print("=" * 50)
+
     root = find_root()
-    print("[*] Raiz: " + str(root))
+
+    print(
+        "[*] Raiz: "
+        + str(root)
+    )
+
+    # Primero corregimos los recursos.
     apply_fixes(root)
+
+    # Después colocamos los Gradle preparados.
     replace_build_files(root)
+
+    # Volvemos a asegurar vectorDrawables después de
+    # reemplazar app/build.gradle por la plantilla.
+    enable_vector_support(root)
+
+    # Gradle Wrapper.
     inject_wrapper(root)
+
+    # AndroidManifest.
     sanitize_manifest(root)
+
+    # Archivos auxiliares.
     inject_project_files(root)
-    zip_it(stage(root), OUTPUT_ZIP)
+
+    # Crear ZIP final.
+    zip_it(
+        stage(root),
+        OUTPUT_ZIP,
+    )
+
     print("=" * 50)
+    print("[*] PROCESO TERMINADO")
 
 
 if __name__ == "__main__":

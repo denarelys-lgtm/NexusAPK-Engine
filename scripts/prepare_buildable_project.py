@@ -62,13 +62,16 @@ def fix_cdata(res_dir):
 
 def fix_plurals(res_dir):
     """
-    Normaliza recursos <plurals> para que AAPT2 pueda compilarlos.
+    Sanitiza recursos <plurals> para evitar fallos internos de AAPT2.
 
-    Algunos APK decompilados contienen <item> sin quantity o con XML
-    interno/atributos incompletos dentro de un <plurals>. AAPT2 puede
-    terminar en NullPointerException al procesarlos. Aquí reconstruimos
-    cada bloque de plural conservando su nombre y sus cantidades, pero
-    eliminando el marcado XML interno problemático de cada item.
+    Algunos APK decompilados contienen plurals que JADX/Apktool reconstruye
+    con atributos o nodos que AAPT2 no puede interpretar. En particular,
+    TableExtractor.parsePlural() puede lanzar NullPointerException cuando un
+    <item> no tiene el atributo quantity esperado.
+
+    Primero intentamos reconstruir los plurals válidos. Si un bloque no puede
+    reconstruirse de forma segura, se elimina completo para que el proyecto
+    siga siendo compilable.
     """
 
     n = 0
@@ -80,34 +83,34 @@ def fix_plurals(res_dir):
         except Exception:
             continue
 
-        if "<plurals" not in t:
+        if "<plurals" not in t.lower():
             continue
 
         changed = False
 
-        def normalize_plural(m):
+        def rebuild_plural(match):
             nonlocal changed
 
-            opening = m.group(1)
-            body = m.group(2)
+            opening = match.group(1)
+            body = match.group(2)
 
-            name_match = re.search(r'\bname\s*=\s*(["\'])(.*?)\1', opening)
-            if not name_match:
+            name_match = re.search(
+                r'\bname\s*=\s*(["\'])(.*?)\1',
+                opening,
+                flags=re.IGNORECASE | re.DOTALL,
+            )
+            if not name_match or not name_match.group(2).strip():
                 changed = True
                 return ""
 
             name = name_match.group(2).strip()
-            if not name:
-                changed = True
-                return ""
-
             items = []
 
-            # Items normales con contenido.
+            # Extrae SOLO elementos item directos del bloque.
             for im in re.finditer(
                 r'<item\b([^>]*)>(.*?)</item\s*>',
                 body,
-                flags=re.DOTALL | re.IGNORECASE,
+                flags=re.IGNORECASE | re.DOTALL,
             ):
                 attrs = im.group(1)
                 value = im.group(2)
@@ -115,42 +118,57 @@ def fix_plurals(res_dir):
                 qm = re.search(
                     r'\bquantity\s*=\s*(["\'])(.*?)\1',
                     attrs,
-                    flags=re.IGNORECASE,
+                    flags=re.IGNORECASE | re.DOTALL,
                 )
-                quantity = qm.group(2).strip() if qm else "other"
+
+                if not qm:
+                    # Un item sin quantity es precisamente una de las
+                    # estructuras que provoca el NPE de AAPT2.
+                    changed = True
+                    continue
+
+                quantity = qm.group(2).strip()
                 if quantity not in valid_quantities:
-                    quantity = "other"
+                    changed = True
+                    continue
 
-                # Elimina XML interno que puede provocar el NPE de AAPT2
-                # en TableExtractor.flattenXmlSubTree().
-                value = re.sub(r'<[^>]*>', '', value)
+                # Conserva el texto, pero elimina cualquier XML interno
+                # problemático (xliff/span/etc.) que pueda volver a romper
+                # el TableExtractor.
+                value = re.sub(r'<[^>]+>', '', value)
                 value = value.strip()
-
                 items.append((quantity, value))
 
-            # También acepta items auto-cerrados.
+            # También detecta items autocerrados, pero solo si tienen
+            # quantity explícito.
             for im in re.finditer(
                 r'<item\b([^>]*)/\s*>',
                 body,
-                flags=re.DOTALL | re.IGNORECASE,
+                flags=re.IGNORECASE | re.DOTALL,
             ):
                 attrs = im.group(1)
                 qm = re.search(
                     r'\bquantity\s*=\s*(["\'])(.*?)\1',
                     attrs,
-                    flags=re.IGNORECASE,
+                    flags=re.IGNORECASE | re.DOTALL,
                 )
-                quantity = qm.group(2).strip() if qm else "other"
+                if not qm:
+                    changed = True
+                    continue
+
+                quantity = qm.group(2).strip()
                 if quantity not in valid_quantities:
-                    quantity = "other"
+                    changed = True
+                    continue
+
                 items.append((quantity, ""))
 
+            # Sin items válidos: eliminar el plural completo.
             if not items:
                 changed = True
                 return ""
 
-            # Un plural no puede tener dos items con la misma quantity.
-            # Conservamos el primero para evitar errores de AAPT2.
+            # AAPT2 no acepta cantidades duplicadas. Conservamos el primero.
             unique = []
             seen = set()
             for quantity, value in items:
@@ -163,26 +181,38 @@ def fix_plurals(res_dir):
             result = ['<plurals name="' + name + '">']
             for quantity, value in unique:
                 result.append(
-                    '    <item quantity="'
-                    + quantity
-                    + '">'
+                    '    <item quantity="' + quantity + '">'
                     + value
                     + '</item>'
                 )
             result.append('</plurals>')
 
             rebuilt = "\n".join(result)
-            original = m.group(0)
-            if rebuilt != original:
+            if rebuilt != match.group(0):
                 changed = True
             return rebuilt
 
+        # Procesa bloques plurals completos.
         new = re.sub(
             r'<plurals\b([^>]*)>(.*?)</plurals\s*>',
-            normalize_plural,
+            rebuild_plural,
             t,
-            flags=re.DOTALL | re.IGNORECASE,
+            flags=re.IGNORECASE | re.DOTALL,
         )
+
+        # Si queda algún <plurals> mal cerrado, elimínalo para impedir que
+        # llegue a AAPT2 un bloque incompleto.
+        if re.search(r'<plurals\b', new, flags=re.IGNORECASE):
+            open_count = len(re.findall(r'<plurals\b', new, flags=re.IGNORECASE))
+            close_count = len(re.findall(r'</plurals\s*>', new, flags=re.IGNORECASE))
+            if open_count != close_count:
+                new = re.sub(
+                    r'<plurals\b[^>]*>.*?(?=</resources\s*>)',
+                    '',
+                    new,
+                    flags=re.IGNORECASE | re.DOTALL,
+                )
+                changed = True
 
         if changed and new != t:
             p.write_text(new, encoding="utf-8")
